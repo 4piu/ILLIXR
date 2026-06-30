@@ -227,8 +227,13 @@ void tcp_network_backend::send_to_peer(const std::string& topic_name, std::strin
 }
 
 extern "C" plugin* this_plugin_factory(phonebook* pb) {
-    auto plugin_ptr = std::make_shared<tcp_network_backend>("tcp_network_backend", pb);
-    pb->register_impl<network::network_backend>(plugin_ptr);
-    auto* obj = plugin_ptr.get();
+    auto* obj = new tcp_network_backend("tcp_network_backend", pb);
+    // runtime_impl::load_so takes ownership of `obj` through its own shared_ptr (constructed from
+    // the raw pointer this factory returns). Registering a second, independently-owned shared_ptr
+    // to the same object here would double-delete it on shutdown. Use a no-op deleter so the
+    // registry entry shares identity with `obj` without competing for ownership of it.
+    pb->register_impl<network::network_backend>(
+        std::shared_ptr<network::network_backend>(static_cast<network::network_backend*>(obj), [](network::network_backend*) {
+        }));
     return obj;
 }
