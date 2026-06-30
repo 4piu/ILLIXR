@@ -1,0 +1,123 @@
+# Building ILLIXR in a systemd-nspawn container
+
+These scripts set up an isolated Ubuntu 22.04 build environment using
+`systemd-nspawn` instead of Docker or a full VM. nspawn containers share the
+host kernel (so they must match the host architecture -- this was built and
+tested on an arm64 board) but get their own root filesystem, package set, and
+init system, which keeps ILLIXR's large dependency footprint off the host.
+
+## Scripts
+
+- `setup_build_env.sh` -- bootstraps the container and installs dependencies.
+  Prompts you to pick a plugin set (a `profiles/*.yaml` file, or a manual
+  comma-separated plugin list) and installs only the apt packages that
+  selection needs. Safe to re-run.
+- `build.sh` -- runs `cmake` configure (first run, or after `--reconfigure`)
+  and `cmake --build` inside the container, using the plugin selection saved
+  by `setup_build_env.sh`. Installs to `CMAKE_INSTALL_PREFIX` by default
+  (pass `--no-install` to skip, e.g. for a quick compile-error check).
+- `run.sh` -- runs the installed `main.*.exe` inside the container with the
+  saved plugin/profile selection. Depends on `build.sh` having installed
+  (the default).
+- `teardown_build_env.sh` -- stops and deletes the container. Only touches
+  container-internal state; never deletes anything under the repo (including
+  `build/`).
+- `common.sh` -- shared config/helpers sourced by the scripts above, not
+  meant to be run directly.
+
+## Quick start
+
+```sh
+./scripts/nspawn/setup_build_env.sh      # pick plugins, provision the container
+./scripts/nspawn/build.sh                # cmake configure + build + install
+./scripts/nspawn/run.sh --headless --duration=30   # run it
+```
+
+To change plugins later, rerun `setup_build_env.sh --profile <name>` or
+`--plugins "..."`, then `build.sh --reconfigure`.
+
+To tear everything down: `./scripts/nspawn/teardown_build_env.sh`.
+
+## Running
+
+`run.sh` forwards unrecognized arguments straight to `main.*.exe` (e.g.
+`--duration=`, `--data=`, `--demo_data=`). Useful flags:
+
+- `--yaml <profile>` -- run from a YAML profile (e.g. `--yaml illixr.yaml`,
+  the file `cmake` generates at the repo root, or `--yaml profiles/ci.yaml`)
+  instead of the saved plugin list. This is also how `env_vars:` like `data:`
+  get set, since `-p plugin,list` mode doesn't read a profile file at all.
+- `--headless` -- sets `ILLIXR_DISPLAY_MODE=none` (no window backend).
+- `--plugins "a,b,c"` -- override the plugin list for one run without
+  touching the saved selection.
+
+Without a profile (`-p` mode), most plugins still need environment variables
+the profile would otherwise set for you (e.g. `offline_cam`/`offline_imu`
+need `ILLIXR_DATA` / `--data=<path>` pointing at a EuRoC-format dataset) --
+see `docs/getting_started.md` for the full list.
+
+`main.*.exe`'s `dlopen()` calls use bare filenames
+(`libplugin.<name>.opt.so`), so they're only found via `LD_LIBRARY_PATH` or
+the binary's rpath -- `run.sh` sets `LD_LIBRARY_PATH` to
+`$INSTALL_PREFIX/lib:$INSTALL_PREFIX/lib64` before launching. This is also
+why `build.sh` installs by default: without an install, plugin `.so` files
+are scattered across `build/plugins/*/` and `build/services/*/`, and even
+`openvins.opt.so`'s own dependency (`libov_msckf_lib.so`) isn't found through
+the executable's rpath alone -- only `LD_LIBRARY_PATH` covers it reliably,
+since modern linkers emit `RUNPATH` (applies only to an object's direct
+dependencies) rather than the older, process-wide `RPATH`.
+
+## How it's wired up
+
+- Rootfs: `/var/lib/machines/illixr-build` (an Ubuntu 22.04 `debootstrap`,
+  architecture auto-detected from the host).
+- Container config: `/etc/systemd/nspawn/illixr-build.nspawn` -- boots with
+  systemd (`Boot=on`), shares the host's network namespace (so `apt` just
+  works, no NAT setup needed), and bind-mounts the repo root into
+  `/home/illixr/ILLIXR` inside the container.
+- Build user: a uid/gid-matched `illixr` user inside the container (matched
+  to the invoking host user's uid/gid). This matters: nspawn doesn't
+  translate ownership across the bind mount, so a uid mismatch between the
+  host user and the container's default first-user (usually 1000) silently
+  breaks writes into the bind-mounted `build/` directory with permission
+  errors that look unrelated to the mismatch.
+- Managed via `machinectl start/shell/stop illixr-build` rather than raw
+  `systemd-nspawn` invocations, so it persists across host reboots and shows
+  up in standard tooling (`machinectl list`, `machinectl status`).
+
+## Dependency notes
+
+- The "core" package set (always installed) covers everything
+  `utils/CMakeLists.txt` and the top-level `CMakeLists.txt` need
+  unconditionally: Boost, Eigen3, OpenCV, GLEW, X11, spdlog, glfw3, GStreamer,
+  the Vulkan/glslang/SPIR-V toolchain, etc.
+- Most plugins (`gtsam_integrator`, `openvins`, `orb_slam3`,
+  `native_renderer`, `timewarp_vk`, `vkdemo`, `pose_prediction`,
+  `tcp_network_backend`, `ground_truth_slam`, ...) fetch and build their
+  remaining dependencies from source via the `cmake/Get*.cmake` modules and
+  need nothing beyond the core set -- expect the first build to take a while
+  (GTSAM, Vulkan-ValidationLayers, and yaml-cpp are all compiled from source).
+- A few plugins need extra apt packages; see `PLUGIN_PACKAGES` in
+  `common.sh` (currently: `realsense`, `openni`, `audio_pipeline`,
+  `offload_vio`, `ada`, `timewarp_gl`).
+- `librealsense2-dev` isn't in Ubuntu's repos; the script adds Intel's apt
+  repo. As of this writing, the GPG key published at
+  `https://librealsense.intel.com/Debian/librealsense.pgp` does **not**
+  match the key the repo's `InRelease` is actually signed with
+  (`FB0B24895113F120`) -- the script pulls the correct key from
+  `keyserver.ubuntu.com` instead. If `apt-get update` ever complains about
+  `NO_PUBKEY` again, that's almost certainly what's happened: Intel rotated
+  keys without updating the static `.pgp` URL.
+- `zed`, `offload_rendering_server/client`, and `hand_tracking_gpu` need a
+  vendor SDK or CUDA toolchain this script doesn't provision. Selecting them
+  prints a warning and installs nothing extra for them -- see
+  `docs/external_dependencies.rst`.
+
+## Why nspawn over Docker here
+
+The repo ships Docker images (`docker/`), but they're x86_64 + CUDA-oriented
+(`docker/ubuntu`) or otherwise don't match an arm64, non-Nvidia board. nspawn
+reuses the host kernel and `apt`, so there's no need to maintain a separate
+Dockerfile per architecture, and `machinectl shell`/`bind-mount` make it easy
+to iterate on the repo from the host editor while building inside the
+container.
