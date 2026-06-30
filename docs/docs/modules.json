@@ -174,48 +174,10 @@
       "name": "offload_rendering_client",
       "cmake_flag": "USE_OFFLOAD_RENDERING_CLIENT=ON",
       "dependencies": [
-        "libaom",
+        "ILLIXR_FFmpeg",
         "cuda-llvm",
         "ccache",
-        "libdav1d",
-        "fontconfig",
-        "libfreetype",
-        "libfribidi",
-        "gnutls",
-        "libjack",
-        "libass",
-        "libbluray",
-        "libbs2b",
-        "libdrm",
-        "libgsm",
-        "libiec61883",
-        "libmodplug",
-        "libopenjpeg",
-        "libopenmpt",
-        "libopus",
-        "libpulse",
-        "librsvg",
-        "ladspa",
-        "libssh",
-        "libv4l2",
-        "libvorbis",
-        "libvpl",
-        "libvpx",
-        "libwebp",
-        "libxml2",
-        "opencl",
         "opengl",
-        "libxcb",
-        "xcb-shm",
-        "libzimg",
-        "libsoxr",
-        "libspeex",
-        "libtheora",
-        "libx264",
-        "libx265",
-        "libgmp",
-        "libmp3lame",
-        "yasm",
         "cuda-cudart"
       ]
     },
@@ -223,48 +185,10 @@
       "name": "offload_rendering_server",
       "cmake_flag": "USE_OFFLOAD_RENDERING_SERVER=ON",
       "dependencies": [
-        "libaom",
+        "ILLIXR_FFmpeg",
         "cuda-llvm",
         "ccache",
-        "libdav1d",
-        "fontconfig",
-        "libfreetype",
-        "libfribidi",
-        "gnutls",
-        "libjack",
-        "libass",
-        "libbluray",
-        "libbs2b",
-        "libdrm",
-        "libgsm",
-        "libiec61883",
-        "libmodplug",
-        "libopenjpeg",
-        "libopenmpt",
-        "libopus",
-        "libpulse",
-        "ladspa",
-        "librsvg",
-        "libssh",
-        "libv4l2",
-        "libvorbis",
-        "libvpl",
-        "libvpx",
-        "libwebp",
-        "libxcb",
-        "xcb-shm",
-        "libxml2",
-        "libzimg",
-        "opencl",
         "opengl",
-        "libsoxr",
-        "libspeex",
-        "libtheora",
-        "libx264",
-        "libx265",
-        "libgmp",
-        "libmp3lame",
-        "yasm",
         "cuda-cudart"
       ]
     },
@@ -571,7 +495,7 @@
       "fontconfig": {
         "pkg": {
           "Ubuntu": {
-            "pkg": "fontconfig",
+            "pkg": "libfontconfig1-dev",
             "postnotes": "",
             "notes": ""
           },
@@ -706,6 +630,22 @@
           "Fedora": {
             "pkg": "gstreamer-devel gstreamer1-plugins-base-devel",
             "postnotes": "",
+            "notes": ""
+          }
+        }
+      }
+    },
+    {
+      "ILLIXR_FFmpeg": {
+        "pkg": {
+          "Ubuntu": {
+            "pkg": "libasound2-dev libaom-dev libass-dev libbluray-dev libbs2b-dev libbz2-dev libdav1d-dev libdrm-dev libfontconfig1-dev libfreetype-dev libfribidi-dev libgmp-dev libgnutls28-dev libgsm1-dev libiec61883-dev libjack-dev liblzma-dev libmodplug-dev libmp3lame-dev libogg-dev libopenjp2-7-dev libopenmpt-dev libopus-dev libpulse-dev librsvg2-dev libsdl2-dev libsndio-dev libsoxr-dev libspeex-dev libssh-dev libtheora-dev libunistring-dev libv4l-dev libvorbis-dev libvpl-dev libvpx-dev libwebp-dev libx264-dev libx265-dev libxcb1-dev libxcb-shm0-dev libxext-dev libxml2-dev libxv-dev libzimg-dev ocl-icd-opencl-dev yasm zlib1g-dev nvidia-cuda-dev nvidia-cuda-toolkit",
+            "postnotes": "",
+            "notes": ""
+          },
+          "Fedora": {
+            "pkg": "libaom-dev libdav1d-dev fontconfig libfreetype-dev libfribidi-dev libgnutls28-devel libjack-dev libass-devel libbluray-devel libbs2b-dev drm-devel libgsm1-dev libiec61883-dev libmodplug-dev libopenjp2-dev libopenmpt-dev libopus-dev libpulse-dev librsvg2-dev ladspa-sdk libssh-devel libv4l-dev libvorbis-dev libvpl-dev libvpx-dev libwebp-dev libxml2-dev ocl-icd-opencl-devel libopengl-dev libxcb1-dev libzimg-dev libsoxr-dev libspeex-dev libtheora-dev libx265-devel libgmp-devel libmp3lame-dev yasm cuda-nvcc cuda-cudart-devel",
+            "postnotes": "libx264-devel",
             "notes": ""
           }
         }
@@ -971,7 +911,7 @@
       "libopenjpeg": {
         "pkg": {
           "Ubuntu": {
-            "pkg": "libopenjp2-dev",
+            "pkg": "libopenjp2-7-dev",
             "postnotes": "",
             "notes": ""
           },
@@ -1163,7 +1103,7 @@
       "libusb": {
         "pkg": {
           "Ubuntu": {
-            "pkg": "libusb-1.0.0-dev",
+            "pkg": "libusb-1.0-0-dev",
             "postnotes": "",
             "notes": ""
           },
