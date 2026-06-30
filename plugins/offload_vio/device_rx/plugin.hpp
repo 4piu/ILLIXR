@@ -4,6 +4,7 @@
 #include "illixr/data_format/pose.hpp"
 #include "illixr/network/tcpsocket.hpp"
 #include "illixr/phonebook.hpp"
+#include "illixr/record_logger.hpp"
 #include "illixr/switchboard.hpp"
 #include "illixr/threadloop.hpp"
 // if the header exists, we are good; if not generate a stub class for IDEs to reduce on-screen errors
@@ -21,7 +22,7 @@ public:
     void        _p_one_iteration() override;
 
 private:
-    void receive_vio_output(const vio_output_proto::VIOOutput& vio_output);
+    void receive_vio_output(const vio_output_proto::VIOOutput& vio_output, std::size_t payload_bytes);
 
     const std::shared_ptr<switchboard>                                    switchboard_;
     const std::shared_ptr<relative_clock>                                 clock_;
@@ -31,6 +32,7 @@ private:
 
     network::TCPSocket socket_;
     std::string        server_ip_;
+    record_coalescer   downlink_log_;
 
     std::string delimiter = "END!";
 };

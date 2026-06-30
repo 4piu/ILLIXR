@@ -8,6 +8,19 @@ using namespace ILLIXR::data_format;
 
 // #define USE_COMPRESSION
 
+// Per-frame uplink (client capture -> server arrival) latency, for offload benchmarking.
+// `frame_timestamp`/`real_timestamp` are the client's relative-clock frame id and wall-clock
+// send time respectively (see plugins/tcp_network_backend and notes/sev_offload_vio_benchmark_plan.md
+// for why only the wall-clock fields are valid for cross-machine latency math).
+const record_header _offload_vio_uplink_header{
+    "offload_vio_uplink",
+    {
+        {"frame_timestamp", typeid(std::size_t)},
+        {"real_timestamp", typeid(std::size_t)},
+        {"payload_bytes", typeid(std::size_t)},
+        {"uplink_latency_ms", typeid(double)},
+    }};
+
 [[maybe_unused]] server_reader::server_reader(const std::string& name, phonebook* pb)
     : threadloop{name, pb}
     , switchboard_{phonebook_->lookup_impl<switchboard>()}
@@ -15,7 +28,8 @@ using namespace ILLIXR::data_format;
     , imu_{switchboard_->get_writer<imu_type>("imu")}
     , cam_{switchboard_->get_writer<binocular_cam_type>("cam")}
     , imu_cam_reader_{switchboard_->get_buffered_reader<switchboard::event_wrapper<std::string>>("compressed_imu_cam")}
-    , log_(spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL"))) {
+    , log_(spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL")))
+    , uplink_log_{phonebook_->lookup_impl<record_logger>()} {
     log_->info("Camera Time,Uplink Time(ms)");
 }
 
@@ -34,7 +48,7 @@ void server_reader::_p_one_iteration() {
             log_->error("[offload_vio.server_rx]Error parsing the protobuf, vio input size = {}",
                         buffer_str.size() - delimiter_.size());
         } else {
-            receive_vio_input(vio_input);
+            receive_vio_input(vio_input, end_position);
         }
     }
 }
@@ -63,11 +77,19 @@ void server_reader::start() {
 #endif
 }
 
-void server_reader::receive_vio_input(const vio_input_proto::IMUCamVec& vio_input) {
+void server_reader::receive_vio_input(const vio_input_proto::IMUCamVec& vio_input, std::size_t payload_bytes) {
     // Logging the transmitting time
     unsigned long long curr_time =
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     double msec_to_trans = (curr_time - vio_input.real_timestamp()) / 1e6;
+
+    uplink_log_.log(record{_offload_vio_uplink_header,
+                           {
+                               {static_cast<std::size_t>(vio_input.cam_data().timestamp())},
+                               {static_cast<std::size_t>(vio_input.real_timestamp())},
+                               {payload_bytes},
+                               {msec_to_trans},
+                           }});
 
     // Loop through and publish all IMU values first
     for (int i = 0; i < vio_input.imu_data_size() - 1; i++) {

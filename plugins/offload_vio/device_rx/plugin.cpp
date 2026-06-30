@@ -7,13 +7,26 @@
 using namespace ILLIXR;
 using namespace ILLIXR::data_format;
 
+// Per-frame downlink (server pose-send -> client arrival) latency, for offload benchmarking.
+// `end_server_timestamp` is the wall-clock send time embedded by offload_vio.server_tx
+// (plugins/offload_vio/server_tx/plugin.cpp); see notes/sev_offload_vio_benchmark_plan.md for why
+// only wall-clock fields are valid for this cross-machine subtraction.
+const record_header _offload_vio_downlink_header{
+    "offload_vio_downlink",
+    {
+        {"end_server_timestamp", typeid(std::size_t)},
+        {"payload_bytes", typeid(std::size_t)},
+        {"downlink_latency_ms", typeid(double)},
+    }};
+
 [[maybe_unused]] offload_reader::offload_reader(const std::string& name, phonebook* pb)
     : threadloop{name, pb}
     , switchboard_{phonebook_->lookup_impl<switchboard>()}
     , clock_{phonebook_->lookup_impl<relative_clock>()}
     , vio_pose_reader_{switchboard_->get_buffered_reader<switchboard::event_wrapper<std::string>>("vio_pose")}
     , pose_{switchboard_->get_writer<pose_type>("slow_pose")}
-    , imu_integrator_input_{switchboard_->get_writer<imu_integrator_input>("imu_integrator_input")} {
+    , imu_integrator_input_{switchboard_->get_writer<imu_integrator_input>("imu_integrator_input")}
+    , downlink_log_{phonebook_->lookup_impl<record_logger>()} {
     spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL"));
     pose_type                   datum_pose_tmp{time_point{}, Eigen::Vector3f{0, 0, 0}, Eigen::Quaternionf{1, 0, 0, 0}};
     switchboard::ptr<pose_type> datum_pose = pose_.allocate<pose_type>(std::move(datum_pose_tmp));
@@ -33,14 +46,24 @@ void offload_reader::_p_one_iteration() {
         vio_output_proto::VIOOutput vio_output;
         bool                        success = vio_output.ParseFromString(buffer_str.substr(0, end_position));
         if (success) {
-            receive_vio_output(vio_output);
+            receive_vio_output(vio_output, end_position);
         } else {
             spdlog::get(name_)->error("[offload_vio.device_rx: Cannot parse VIO output!!");
         }
     }
 }
 
-void offload_reader::receive_vio_output(const vio_output_proto::VIOOutput& vio_output) {
+void offload_reader::receive_vio_output(const vio_output_proto::VIOOutput& vio_output, std::size_t payload_bytes) {
+    unsigned long long curr_time =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    double downlink_latency_ms = (curr_time - vio_output.end_server_timestamp()) / 1e6;
+    downlink_log_.log(record{_offload_vio_downlink_header,
+                             {
+                                 {static_cast<std::size_t>(vio_output.end_server_timestamp())},
+                                 {payload_bytes},
+                                 {downlink_latency_ms},
+                             }});
+
     const vio_output_proto::SlowPose& slow_pose = vio_output.slow_pose();
 
     pose_type datum_pose_tmp{

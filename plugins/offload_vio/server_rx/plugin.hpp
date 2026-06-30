@@ -5,6 +5,7 @@
 #include "illixr/data_format/opencv_data_types.hpp"
 #include "illixr/network/tcpsocket.hpp"
 #include "illixr/phonebook.hpp"
+#include "illixr/record_logger.hpp"
 #include "illixr/switchboard.hpp"
 #include "illixr/threadloop.hpp"
 #include "video_decoder.hpp"
@@ -26,7 +27,7 @@ public:
     void        start() override;
 
 private:
-    void receive_vio_input(const vio_input_proto::IMUCamVec& vio_input);
+    void receive_vio_input(const vio_input_proto::IMUCamVec& vio_input, std::size_t payload_bytes);
 
     std::unique_ptr<vio_video_decoder> decoder_;
 
@@ -44,6 +45,7 @@ private:
     switchboard::buffered_reader<switchboard::event_wrapper<std::string>> imu_cam_reader_;
     std::string                                                           buffer_str_;
     std::shared_ptr<spdlog::logger>                                       log_;
+    record_coalescer                                                      uplink_log_;
 
     const std::string delimiter_ = "EEND!";
 };
