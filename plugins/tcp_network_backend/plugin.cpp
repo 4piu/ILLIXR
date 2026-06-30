@@ -6,29 +6,52 @@ tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb
     : plugin(name_, pb_)
     , switchboard_{pb_->lookup_impl<switchboard>()} {
     // read environment variables
-    if (switchboard_->get_env_char("ILLIXR_TCP_SERVER_IP")) {
-        server_ip_ = switchboard_->get_env_char("ILLIXR_TCP_SERVER_IP");
+    if (const char* val = switchboard_->get_env_char("ILLIXR_TCP_SERVER_IP")) {
+        server_ip_ = val;
         spdlog::get("illixr")->info("[tcp_network_backend] Using TCP server IP {}", server_ip_);
     }
 
-    if (switchboard_->get_env_char("ILLIXR_TCP_SERVER_PORT")) {
-        server_port_ = std::stoi(switchboard_->get_env_char("ILLIXR_TCP_SERVER_PORT"));
+    if (const char* val = switchboard_->get_env_char("ILLIXR_TCP_SERVER_PORT")) {
+        server_port_ = std::stoi(val);
         spdlog::get("illixr")->info("[tcp_network_backend] Using TCP server port {}", server_port_);
     }
 
-    if (switchboard_->get_env_char("ILLIXR_TCP_CLIENT_IP")) {
-        client_ip_ = switchboard_->get_env_char("ILLIXR_TCP_CLIENT_IP");
+    if (const char* val = switchboard_->get_env_char("ILLIXR_TCP_CLIENT_IP")) {
+        client_ip_ = val;
         spdlog::get("illixr")->info("[tcp_network_backend] Using TCP client IP {}", client_ip_);
     }
 
-    if (switchboard_->get_env_char("ILLIXR_TCP_CLIENT_PORT")) {
-        client_port_ = std::stoi(switchboard_->get_env_char("ILLIXR_TCP_CLIENT_PORT"));
+    if (const char* val = switchboard_->get_env_char("ILLIXR_TCP_CLIENT_PORT")) {
+        client_port_ = std::stoi(val);
         spdlog::get("illixr")->info("[tcp_network_backend] Using TCP client port {}", client_port_);
     }
 
-    if (switchboard_->get_env_char("ILLIXR_IS_CLIENT")) {
-        is_client_ = std::stoi(switchboard_->get_env_char("ILLIXR_IS_CLIENT"));
-        spdlog::get("illixr")->info("[tcp_network_backend] Is client", is_client_);
+    if (const char* val = switchboard_->get_env_char("ILLIXR_IS_CLIENT")) {
+        is_client_ = std::stoi(val);
+        spdlog::get("illixr")->info("[tcp_network_backend] Is client: {}", is_client_);
+    }
+
+    // ILLIXR_TCP_SERVER_IP/PORT are required for both roles: the server binds to them and the
+    // client connects to them. ILLIXR_IS_CLIENT selects the role. Without these, the socket
+    // calls below would silently operate on an empty IP / uninitialized port.
+    std::vector<std::string> missing_vars;
+    if (is_client_ == -1) {
+        missing_vars.emplace_back("ILLIXR_IS_CLIENT (set to 1 for the client process, 0 for the server process)");
+    }
+    if (server_ip_.empty()) {
+        missing_vars.emplace_back("ILLIXR_TCP_SERVER_IP");
+    }
+    if (server_port_ == -1) {
+        missing_vars.emplace_back("ILLIXR_TCP_SERVER_PORT");
+    }
+    if (!missing_vars.empty()) {
+        std::string joined;
+        for (size_t i = 0; i < missing_vars.size(); i++) {
+            joined += (i == 0 ? "" : ", ") + missing_vars[i];
+        }
+        throw std::runtime_error("[tcp_network_backend] Missing required environment variable(s): " + joined +
+                                  ". Set them in the env_vars section of your yaml config (see "
+                                  "plugins/tcp_network_backend/README.md).");
     }
 
     if (is_client_) {

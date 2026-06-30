@@ -32,10 +32,10 @@ private:
     network::TCPSocket*          peer_socket_ = nullptr;
 
     std::string server_ip_;
-    int         server_port_;
+    int         server_port_ = -1;
     std::string client_ip_;
-    int         client_port_;
-    int         is_client_;
+    int         client_port_ = -1;
+    int         is_client_   = -1;
 
     std::vector<std::string>                               networked_topics_;
     std::unordered_map<std::string, network::topic_config> networked_topics_configs_;
