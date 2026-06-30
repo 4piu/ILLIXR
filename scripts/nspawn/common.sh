@@ -7,6 +7,12 @@ set -euo pipefail
 MACHINE_NAME="illixr-build"
 ROOTFS="/var/lib/machines/${MACHINE_NAME}"
 NSPAWN_UNIT="/etc/systemd/nspawn/${MACHINE_NAME}.nspawn"
+# Per-instance drop-in for the templated systemd-nspawn@.service unit. Used to
+# grant the container's cgroup access to host USB devices (e.g. a RealSense
+# camera) -- Bind= in the .nspawn file alone only makes the device node
+# visible in the container's mount namespace, it doesn't grant the cgroup
+# device-controller permission needed to actually open() it.
+NSPAWN_SERVICE_DROPIN_DIR="/etc/systemd/system/systemd-nspawn@${MACHINE_NAME}.service.d"
 CONTAINER_USER="illixr"
 CONTAINER_HOME="/home/${CONTAINER_USER}"
 RELEASE="jammy"   # Ubuntu 22.04, matches the most common ILLIXR target
@@ -65,7 +71,7 @@ CORE_PACKAGES=(
 # remaining dependencies are fetched and built from source by the cmake Get*.cmake
 # modules).
 declare -A PLUGIN_PACKAGES=(
-    [realsense]="librealsense2-dev librealsense2-gl-dev"
+    [realsense]="librealsense2-dev librealsense2-gl-dev librealsense2-utils usbutils"
     [openni]="libopenni2-dev"
     [audio_pipeline]="libprotobuf-dev protobuf-compiler libprotoc-dev portaudio19-dev libspatialaudio-dev"
     [offload_vio]="libprotobuf-dev protobuf-compiler libprotoc-dev"
@@ -77,6 +83,12 @@ declare -A PLUGIN_PACKAGES=(
 # install, CUDA toolchain). Selecting these only installs what's listed (if any)
 # and prints a warning -- see docs/external_dependencies.rst for the rest.
 UNSUPPORTED_PLUGINS=(zed offload_rendering_server offload_rendering_client hand_tracking_gpu)
+
+# Plugins that talk to a physical USB device and need /dev/bus/usb passed
+# through into the container (see the USB passthrough section of
+# setup_build_env.sh). Only "realsense" has actually been exercised against
+# real hardware; add others here once verified.
+USB_PASSTHROUGH_PLUGINS=(realsense)
 
 # librealsense isn't in Ubuntu's repos; Intel publishes their own apt repo.
 # NOTE: as of 2026-06-30 the key published at https://librealsense.intel.com/Debian/librealsense.pgp
@@ -105,12 +117,20 @@ ensure_machine_running() {
     if ! machine_running; then
         echo "Starting ${MACHINE_NAME}..."
         sudo machinectl start "${MACHINE_NAME}"
-        # wait for boot
         for _ in $(seq 1 30); do
             machine_running && break
             sleep 1
         done
     fi
+    # machine_running (machinectl status) goes true before the container's
+    # own systemd has finished booting far enough for `machinectl shell` to
+    # work -- without this, the very next container_exec can fail with
+    # "Failed to get shell PTY: Protocol error".
+    for _ in $(seq 1 30); do
+        sudo machinectl shell "${MACHINE_NAME}" /bin/true >/dev/null 2>&1 && return
+        sleep 1
+    done
+    echo "WARNING: ${MACHINE_NAME} did not become shell-ready in time." >&2
 }
 
 container_exec() {

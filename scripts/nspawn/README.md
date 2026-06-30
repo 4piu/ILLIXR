@@ -113,6 +113,67 @@ dependencies) rather than the older, process-wide `RPATH`.
   prints a warning and installs nothing extra for them -- see
   `docs/external_dependencies.rst`.
 
+## USB device passthrough (RealSense)
+
+If the selected plugin list includes `realsense` (see `USB_PASSTHROUGH_PLUGINS`
+in `common.sh`), `setup_build_env.sh` automatically wires through a connected
+Intel RealSense camera. This needs three independent pieces, all handled by
+the script:
+
+1. **`/dev/bus/usb` bind mount** (`.nspawn` `[Files] Bind=`) -- gives the
+   container libusb/control-channel access. By itself this is only enough
+   for `rs-enumerate-devices` to see the device, not for ILLIXR's plugin.
+2. **`/dev/videoN` + `/dev/hidrawN` bind mounts** -- discovered dynamically by
+   USB vendor ID (`8086`, Intel) at setup time and bound individually, since
+   unlike `/dev/bus/usb` there's no stable parent directory for V4L2/hidraw
+   devices. The D4xx series streams color/depth/IR over V4L2 but exposes its
+   IMU (gyro/accel) over a separate USB HID interface -- without the
+   `/dev/hidrawN` bind, `rs-enumerate-devices` succeeds but ILLIXR's
+   `plugins/realsense/plugin.cpp` still aborts with `Supported Realsense
+   device NOT found!`, because `find_supported_devices()` requires *both* a
+   gyro and an accel stream to recognize a D4xx camera.
+3. **cgroup `DeviceAllow=`** (`systemd-nspawn@illixr-build.service.d/usb.conf`)
+   -- `Bind=` only makes the node visible in the container's mount namespace;
+   the container's `DevicePolicy=closed` cgroup policy separately denies
+   `open()` on it unless explicitly allowed. Granted via systemd's symbolic
+   device-tag names: `char-usb_device` (major 189), `char-video4linux`
+   (major 81), `char-hidraw` (major 236) -- matched against `/proc/devices`
+   on the host.
+4. **Boot-time permission fixup** (`illixr-usb-perms.service`, installed into
+   the container's rootfs) -- for the *directory* bind (`/dev/bus/usb`) the
+   kernel preserves the host's permissions (it's a real bind mount of an
+   existing populated directory). For *individual device-file* binds
+   (`/dev/videoN`, `/dev/hidrawN`), systemd-nspawn instead recreates the node
+   via `mknod` with the same major:minor but **not** the host's mode/owner --
+   it comes up `0600 root:root` regardless of the host's actual (usually
+   `0666 plugdev`) permissions. A oneshot unit chmods the exact bound paths
+   on every container boot to fix this, since there's no real udev inside the
+   container to redo it for us.
+
+**Known limitation:** device numbers can change across host replugs --
+rerun `setup_build_env.sh` after reconnecting the camera (it stops/starts
+the container automatically if the passthrough config changed).
+
+**Known issue on at least one tested board (OrangePi/Rockchip, single USB3
+port):** the D455 can flap -- the kernel repeatedly detaches and reprobes its
+interfaces (visible in `dmesg` as repeating `uvcvideo: Found UVC 1.50
+device` / incrementing `hid-generic ... hiddev96,hidraw3` lines) even at
+idle, which recreates the device nodes out from under the static bind mounts
+and makes `rs-enumerate-devices`/the realsense plugin intermittently fail
+with `No device detected` even though the setup itself is correct (verified
+working multiple times when the connection briefly held steady, including
+gyro/accel detection). This looks like a power/signal-integrity issue with
+the D455's draw on this board's USB3 controller, not a container
+configuration problem -- a powered USB hub is the standard fix for D455
+power issues on SBCs. If `rs-enumerate-devices -s` run as root
+(`sudo machinectl shell illixr-build /bin/bash -c 'rs-enumerate-devices -s'`)
+works but `run.sh` still reports "Supported Realsense device NOT found!",
+check `dmesg` for repeating UVC/HID probe lines before assuming the script is
+broken -- two unbind/rebind attempts during development reproduced this
+exact symptom and one even caused a full USB disconnect requiring a physical
+replug to recover (don't run raw `/sys/bus/usb/drivers/usb/{unbind,bind}` on
+a device you can't physically reach).
+
 ## Why nspawn over Docker here
 
 The repo ships Docker images (`docker/`), but they're x86_64 + CUDA-oriented
