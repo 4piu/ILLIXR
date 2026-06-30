@@ -142,11 +142,16 @@ public:
     }
 
     void _stop() override {
-        phonebook_.lookup_impl<stoplight>()->signal_should_stop();
+        auto stoplight_service = phonebook_.lookup_impl<stoplight>();
+        if (stoplight_service->check_shutdown_complete()) {
+            return;
+        }
+
+        stoplight_service->signal_should_stop();
         // After this point, threads may exit their main loops
         // They still have destructors and still have to be joined.
 
-        phonebook_.lookup_impl<switchboard>()->stop();
+        switchboard_->stop();
         // After this point, Switchboard's internal thread-workers which power synchronous callbacks are stopped and joined.
 
         for (const std::shared_ptr<plugin>& plugin : plugins_) {
@@ -154,8 +159,12 @@ public:
             // Each plugin gets joined in its stop
         }
 
+        plugins_.clear();
+        // Drop queued/latest topic events while plugin shared libraries are still loaded.
+        switchboard_->clear_topics();
+
         // Tell runtime::wait() that it can return
-        phonebook_.lookup_impl<stoplight>()->signal_shutdown_complete();
+        stoplight_service->signal_shutdown_complete();
     }
 
     ~runtime_impl() override {
