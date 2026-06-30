@@ -6,6 +6,8 @@
 #include "illixr/plugin.hpp"
 #include "illixr/switchboard.hpp"
 
+#include <thread>
+
 namespace ILLIXR {
 
 class tcp_network_backend
@@ -30,6 +32,7 @@ private:
     std::atomic<bool>            running_     = true;
     std::atomic<bool>            ready_       = false;
     network::TCPSocket*          peer_socket_ = nullptr;
+    std::thread                  network_thread_;
 
     std::string server_ip_;
     int         server_port_ = -1;

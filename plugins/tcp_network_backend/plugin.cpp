@@ -55,20 +55,20 @@ tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb
     }
 
     if (is_client_) {
-        client = true;
-        std::thread([this]() {
+        client          = true;
+        network_thread_ = std::thread([this]() {
             start_client();
-        }).detach();
+        });
 
         // wait till we are connected
         while (!ready_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     } else {
-        client = false;
-        std::thread([this]() {
+        client          = false;
+        network_thread_ = std::thread([this]() {
             start_server();
-        }).detach();
+        });
 
         while (!ready_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -113,7 +113,17 @@ void tcp_network_backend::read_loop(network::TCPSocket* socket) {
         // read from socket
         // packet are in the format
         // total_length:4bytes|topic_name_length:4bytes|topic_name|message
-        std::string packet = socket->read_data();
+        std::string packet;
+        try {
+            packet = socket->read_data();
+        } catch (const std::exception& e) {
+            // running_ is false when this is a deliberate shutdown (stop() calls socket_shutdown()
+            // to unblock this read); only treat it as an error when the disconnect was unexpected.
+            if (running_) {
+                spdlog::get("illixr")->error("[tcp_network_backend] Network read failed, stopping: {}", e.what());
+            }
+            return;
+        }
         buffer += packet;
 
         // check if we have a complete packet
@@ -190,7 +200,17 @@ void tcp_network_backend::topic_receive(const std::string& topic_name, std::vect
 
 void tcp_network_backend::stop() {
     running_ = false;
+    // Unblock the network thread's pending read so it can observe running_ == false and return,
+    // before we join it. Without this, the thread could still be inside read_data() on
+    // peer_socket_ when we delete it below, causing a use-after-free.
+    if (peer_socket_) {
+        peer_socket_->socket_shutdown();
+    }
+    if (network_thread_.joinable()) {
+        network_thread_.join();
+    }
     delete peer_socket_;
+    peer_socket_ = nullptr;
 }
 
 void tcp_network_backend::send_to_peer(const std::string& topic_name, std::string&& message) {

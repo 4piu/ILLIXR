@@ -64,6 +64,13 @@ public:
         }
     }
 
+    // Unblock any thread currently blocked in read_data()/write_data() on this socket, so it can be
+    // safely joined before the TCPSocket is destroyed. Errors are ignored: the socket may already be
+    // closed by the peer, which is fine since we're shutting down anyway.
+    void socket_shutdown() const {
+        shutdown(fd_, SHUT_RDWR);
+    }
+
     // Accept connect from the client. It is typically called from the server socket.
     int socket_accept() const {
         int fd = accept(fd_, nullptr, nullptr);
