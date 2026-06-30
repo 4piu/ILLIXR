@@ -42,6 +42,7 @@ void server_reader::_p_one_iteration() {
 void server_reader::start() {
     threadloop::start();
 
+#ifdef USE_COMPRESSION
     decoder_ = std::make_unique<vio_video_decoder>([this](cv::Mat&& img0, cv::Mat&& img1) {
         queue_.consume_one([&](uint64_t& timestamp) {
             (void) timestamp;
@@ -59,6 +60,7 @@ void server_reader::start() {
         condition_variable_.notify_one();
     });
     decoder_->init();
+#endif
 }
 
 void server_reader::receive_vio_input(const vio_input_proto::IMUCamVec& vio_input) {

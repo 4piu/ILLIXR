@@ -27,6 +27,7 @@ using namespace ILLIXR::data_format;
 void offload_writer::start() {
     threadloop::start();
 
+#ifdef USE_COMPRESSION
     encoder_ = std::make_unique<vio_video_encoder>([this](const GstMapInfo& img0, const GstMapInfo& img1) {
         queue_.consume_one([&](uint64_t& timestamp) {
             (void) timestamp;
@@ -43,6 +44,7 @@ void offload_writer::start() {
         condition_var_.notify_one();
     });
     encoder_->init();
+#endif
 
     switchboard_->schedule<imu_type>(id_, "imu", [this](const switchboard::ptr<const imu_type>& datum, std::size_t) {
         this->prepare_imu_cam_data(datum);
