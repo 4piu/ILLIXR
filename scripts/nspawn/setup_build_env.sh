@@ -76,7 +76,6 @@ fi
 PKG_SET=()
 for pkg in "${CORE_PACKAGES[@]}"; do PKG_SET+=("$pkg"); done
 NEED_REALSENSE_REPO=0
-NEED_USB_PASSTHROUGH=0
 for plugin in "${PLUGINS[@]}"; do
     base="${plugin%%.*}"
     for u in "${UNSUPPORTED_PLUGINS[@]}"; do
@@ -85,9 +84,6 @@ for plugin in "${PLUGINS[@]}"; do
         fi
     done
     if [ "$base" = "realsense" ]; then NEED_REALSENSE_REPO=1; fi
-    for u in "${USB_PASSTHROUGH_PLUGINS[@]}"; do
-        if [ "$base" = "$u" ]; then NEED_USB_PASSTHROUGH=1; fi
-    done
     extra="${PLUGIN_PACKAGES[$base]:-}"
     if [ -n "$extra" ]; then
         # shellcheck disable=SC2206
@@ -134,174 +130,31 @@ sudo rm -f "${ROOTFS}/etc/resolv.conf"
 sudo cp /etc/resolv.conf "${ROOTFS}/etc/resolv.conf"
 
 # ---------------------------------------------------------------------------
-# 5. .nspawn unit: boot with systemd, share host networking, bind-mount the
-#    repo (and /dev/bus/usb plus any matching /dev/videoN nodes, if a
-#    USB-dependent plugin like realsense was selected -- see the USB
-#    passthrough step below for the cgroup half of this).
-#
-#    RealSense (and most UVC cameras) stream image data over V4L2
-#    (/dev/videoN) and IMU (gyro/accel) data over a separate USB HID
-#    interface (/dev/hidrawN) -- raw /dev/bus/usb access alone is only
-#    enough for librealsense's control channel (firmware/hardware-monitor
-#    commands). Without /dev/videoN, rs-enumerate-devices reports "No
-#    device detected"; without /dev/hidrawN, the camera enumerates fine but
-#    ILLIXR's realsense plugin still aborts with "Supported Realsense
-#    device NOT found!" because plugins/realsense/plugin.cpp requires BOTH
-#    a gyro and an accel stream to recognize a D4xx camera, and those only
-#    show up via the HID interface. Unlike /dev/bus/usb, there's no stable
-#    parent directory to bind once for either of these, so matching nodes
-#    are discovered by USB vendor ID here and bound individually. NOTE:
-#    device numbers can change across replugs -- rerun this script after
-#    reconnecting the camera to refresh the bound set.
+# 5. Container config: .nspawn unit (repo bind, plus USB passthrough if a
+#    USB-dependent plugin like realsense was selected), cgroup DeviceAllow,
+#    and the boot-time device-permissions fixup unit. Shared with
+#    ensure_machine_running() in common.sh, which re-syncs this from
+#    currently-connected hardware on every container start (not just here) --
+#    see sync_container_config's comment for why that matters.
 # ---------------------------------------------------------------------------
-sudo mkdir -p "$(dirname "${NSPAWN_UNIT}")"
-USB_BIND_LINES=""
-MATCHED_NODES=()
-if [ "$NEED_USB_PASSTHROUGH" = "1" ]; then
-    USB_BIND_LINES="Bind=/dev/bus/usb:/dev/bus/usb"
-    for dev in /dev/video*; do
-        [ -c "$dev" ] || continue
-        vendor="$(udevadm info -q property -n "$dev" 2>/dev/null | sed -n 's/^ID_VENDOR_ID=//p')"
-        if [ "$vendor" = "8086" ]; then
-            MATCHED_NODES+=("$dev")
-            USB_BIND_LINES="${USB_BIND_LINES}
-Bind=${dev}:${dev}"
-        fi
-    done
-    # hidraw nodes don't get an ID_VENDOR_ID property from udev's default
-    # rules (unlike video4linux), but DEVPATH embeds the USB
-    # "<bus_type>:<vendor>:<product>.<n>" id, e.g. ".../6-1:1.5/0003:8086:0B5C.0037/...".
-    for dev in /dev/hidraw*; do
-        [ -c "$dev" ] || continue
-        devpath="$(udevadm info -q property -n "$dev" 2>/dev/null | sed -n 's/^DEVPATH=//p')"
-        if echo "$devpath" | grep -qi ':8086:'; then
-            MATCHED_NODES+=("$dev")
-            USB_BIND_LINES="${USB_BIND_LINES}
-Bind=${dev}:${dev}"
-        fi
-    done
-    if [ "${#MATCHED_NODES[@]}" -eq 0 ]; then
-        echo "WARNING: realsense selected but no /dev/video* or /dev/hidraw* node with USB vendor 8086 (Intel) found -- is the camera plugged in? Rerun this script once it is." >&2
-    fi
-fi
-
-NSPAWN_UNIT_TMP="$(mktemp)"
-cat > "${NSPAWN_UNIT_TMP}" <<EOF
-[Exec]
-Boot=on
-PrivateUsers=no
-
-[Network]
-VirtualEthernet=no
-
-[Files]
-Bind=${REPO_ROOT}:${CONTAINER_SRC}
-${USB_BIND_LINES}
-EOF
-
-NSPAWN_UNIT_CHANGED=0
-if ! sudo cmp -s "${NSPAWN_UNIT_TMP}" "${NSPAWN_UNIT}" 2>/dev/null; then
-    NSPAWN_UNIT_CHANGED=1
-fi
-sudo cp "${NSPAWN_UNIT_TMP}" "${NSPAWN_UNIT}"
-rm -f "${NSPAWN_UNIT_TMP}"
-
-# ---------------------------------------------------------------------------
-# 5b. USB passthrough, cgroup half: Bind= above only makes /dev/bus/usb
-#     visible inside the container's mount namespace -- opening a device node
-#     under it still needs the container's cgroup device-controller policy to
-#     allow it (DevicePolicy=closed denies everything not explicitly listed).
-#     "char-usb_device" is systemd's symbolic name for major 189 (`grep usb
-#     /proc/devices`), i.e. every node under /dev/bus/usb.
-# ---------------------------------------------------------------------------
-SERVICE_DROPIN_CHANGED=0
-if [ "$NEED_USB_PASSTHROUGH" = "1" ]; then
-    sudo mkdir -p "${NSPAWN_SERVICE_DROPIN_DIR}"
-    DROPIN_TMP="$(mktemp)"
-    cat > "${DROPIN_TMP}" <<EOF
-[Service]
-DeviceAllow=char-usb_device rwm
-DeviceAllow=char-video4linux rwm
-DeviceAllow=char-hidraw rwm
-EOF
-    if ! sudo cmp -s "${DROPIN_TMP}" "${NSPAWN_SERVICE_DROPIN_DIR}/usb.conf" 2>/dev/null; then
-        SERVICE_DROPIN_CHANGED=1
-    fi
-    sudo cp "${DROPIN_TMP}" "${NSPAWN_SERVICE_DROPIN_DIR}/usb.conf"
-    rm -f "${DROPIN_TMP}"
-    sudo systemctl daemon-reload
-elif [ -f "${NSPAWN_SERVICE_DROPIN_DIR}/usb.conf" ]; then
-    # Plugin selection changed and no longer needs USB -- drop the grant.
-    sudo rm -f "${NSPAWN_SERVICE_DROPIN_DIR}/usb.conf"
-    sudo rmdir --ignore-fail-on-non-empty "${NSPAWN_SERVICE_DROPIN_DIR}" 2>/dev/null || true
-    SERVICE_DROPIN_CHANGED=1
-    sudo systemctl daemon-reload
-fi
-
-# ---------------------------------------------------------------------------
-# 5c. USB passthrough, permissions half: for individual device-file Bind=
-#     entries (as opposed to the /dev/bus/usb *directory* bind, which is a
-#     real bind mount and keeps the host's permissions), systemd-nspawn
-#     recreates the node inside the container via mknod(same major:minor)
-#     rather than propagating the source's mode/owner -- every /dev/videoN
-#     and /dev/hidrawN bound above comes up 0600 root:root on boot
-#     regardless of the host's (usually 0666 plugdev) permissions. The
-#     cgroup DeviceAllow= grant above is necessary but not sufficient: it
-#     only lifts the cgroup device-controller check, the normal Unix
-#     permission bits are checked too and default-deny non-root. Fix it with
-#     a oneshot unit that chmods the exact paths we bound, since the
-#     container has no real udev to redo this for us.
-# ---------------------------------------------------------------------------
-PERMS_UNIT_TMP="$(mktemp)"
-PERMS_SCRIPT_TMP="$(mktemp)"
-if [ "$NEED_USB_PASSTHROUGH" = "1" ] && [ "${#MATCHED_NODES[@]}" -gt 0 ]; then
-    {
-        echo "#!/bin/sh"
-        for node in "${MATCHED_NODES[@]}"; do
-            echo "[ -e '${node}' ] && chmod 0666 '${node}'"
-        done
-    } > "${PERMS_SCRIPT_TMP}"
-    cat > "${PERMS_UNIT_TMP}" <<'EOF'
-[Unit]
-Description=Fix permissions on bind-mounted RealSense device nodes
-DefaultDependencies=no
-After=local-fs.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/illixr-fix-usb-perms.sh
-
-[Install]
-WantedBy=sysinit.target
-EOF
-fi
-
-PERMS_CHANGED=0
-if ! sudo cmp -s "${PERMS_SCRIPT_TMP}" "${ROOTFS}/usr/local/sbin/illixr-fix-usb-perms.sh" 2>/dev/null; then
-    PERMS_CHANGED=1
-fi
-if [ -s "${PERMS_SCRIPT_TMP}" ]; then
-    sudo install -m 755 "${PERMS_SCRIPT_TMP}" "${ROOTFS}/usr/local/sbin/illixr-fix-usb-perms.sh"
-    sudo install -m 644 "${PERMS_UNIT_TMP}" "${ROOTFS}/etc/systemd/system/illixr-usb-perms.service"
-    sudo mkdir -p "${ROOTFS}/etc/systemd/system/sysinit.target.wants"
-    sudo ln -sf /etc/systemd/system/illixr-usb-perms.service \
-        "${ROOTFS}/etc/systemd/system/sysinit.target.wants/illixr-usb-perms.service"
-elif [ -f "${ROOTFS}/usr/local/sbin/illixr-fix-usb-perms.sh" ]; then
-    # No USB-dependent plugin selected (or no matching devices) anymore -- clean up.
-    sudo rm -f "${ROOTFS}/usr/local/sbin/illixr-fix-usb-perms.sh" \
-        "${ROOTFS}/etc/systemd/system/illixr-usb-perms.service" \
-        "${ROOTFS}/etc/systemd/system/sysinit.target.wants/illixr-usb-perms.service"
-    PERMS_CHANGED=1
-fi
-rm -f "${PERMS_UNIT_TMP}" "${PERMS_SCRIPT_TMP}"
-
-# Bind=, DeviceAllow=, and the perms-fixup unit are only applied when the
-# container (re)starts.
-if { [ "$NSPAWN_UNIT_CHANGED" = "1" ] || [ "$SERVICE_DROPIN_CHANGED" = "1" ] || [ "$PERMS_CHANGED" = "1" ]; } && machine_running; then
-    echo "USB passthrough config changed; restarting ${MACHINE_NAME} to apply it..."
+sync_container_config "${PLUGINS[*]}"
+if [ "$CONTAINER_CONFIG_CHANGED" = "1" ] && machine_running; then
+    echo "Container config changed; restarting ${MACHINE_NAME} to apply it..."
     sudo machinectl stop "${MACHINE_NAME}"
     for _ in $(seq 1 30); do machine_running || break; sleep 1; done
 fi
+
+# Persist the plugin selection now, before starting: ensure_machine_running()
+# (next step) re-syncs container config from the *saved* selection whenever
+# it starts the machine from stopped, so if this were written later (after
+# the machine is already running) a plugin-selection change here would get
+# immediately clobbered by the still-stale on-disk selection.
+mkdir -p "${STATE_DIR}"
+{
+    echo "PROFILE=\"${PROFILE}\""
+    echo "PLUGINS=\"${PLUGINS[*]}\""
+    echo "INSTALL_PREFIX=\"${INSTALL_PREFIX}\""
+} > "${STATE_FILE}"
 
 # ---------------------------------------------------------------------------
 # 6. Start the machine. Using `machinectl start` (rather than a one-off
@@ -371,16 +224,6 @@ if [ "$NEED_USB_PASSTHROUGH" = "1" ]; then
         echo "  - If it was plugged in after the container started, rerun this script to pick up the /dev/videoN nodes, then restart: machinectl stop ${MACHINE_NAME}" >&2
     fi
 fi
-
-# ---------------------------------------------------------------------------
-# 9. Persist the plugin selection for build.sh.
-# ---------------------------------------------------------------------------
-mkdir -p "${STATE_DIR}"
-{
-    echo "PROFILE=\"${PROFILE}\""
-    echo "PLUGINS=\"${PLUGINS[*]}\""
-    echo "INSTALL_PREFIX=\"${INSTALL_PREFIX}\""
-} > "${STATE_FILE}"
 
 echo
 echo "Build environment ready. Source is bind-mounted at ${CONTAINER_SRC} inside ${MACHINE_NAME}."

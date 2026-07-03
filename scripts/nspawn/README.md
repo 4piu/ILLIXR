@@ -81,9 +81,28 @@ dependencies) rather than the older, process-wide `RPATH`.
   host user and the container's default first-user (usually 1000) silently
   breaks writes into the bind-mounted `build/` directory with permission
   errors that look unrelated to the mismatch.
-- Managed via `machinectl start/shell/stop illixr-build` rather than raw
-  `systemd-nspawn` invocations, so it persists across host reboots and shows
-  up in standard tooling (`machinectl list`, `machinectl status`).
+- Managed via `machinectl start/stop illixr-build` (persists across host
+  reboots, shows up in standard tooling like `machinectl list`/`status`)
+  rather than raw `systemd-nspawn` invocations. Commands run *inside* the
+  container go through `systemd-run --pipe --wait --machine=illixr-build`
+  (the `container_exec`/`container_exec_as_user` helpers in `common.sh`),
+  not `machinectl shell`: `man machinectl` documents that `shell` does not
+  propagate the invoked process's exit code (it always returns 0 to the
+  caller regardless of what happened inside) -- every `if container_exec
+  ...` check in these scripts depends on a real exit code, and silently got
+  the wrong answer until this was caught and fixed.
+- **Self-healing container config**: `sync_container_config()` in
+  `common.sh` is called both by `setup_build_env.sh` and by
+  `ensure_machine_running()` itself, every time the container needs to be
+  started from stopped. This matters because `systemd-nspawn`'s `Bind=` has
+  no "skip if the source is missing" syntax -- a `.nspawn` file with a
+  stale `Bind=/dev/hidraw3` entry (e.g. left over from before a host
+  reboot, when a since-replugged camera re-enumerates under a different
+  node) makes the *entire container* fail to start
+  (`Failed to stat /dev/hidraw3: No such file or directory`), not just lose
+  USB passthrough. Re-deriving the USB bind list from currently-connected
+  hardware on every start, rather than only when `setup_build_env.sh` is
+  run explicitly, avoids that.
 
 ## Dependency notes
 
@@ -150,9 +169,14 @@ the script:
    on every container boot to fix this, since there's no real udev inside the
    container to redo it for us.
 
-**Known limitation:** device numbers can change across host replugs --
-rerun `setup_build_env.sh` after reconnecting the camera (it stops/starts
-the container automatically if the passthrough config changed).
+**Known limitation:** device numbers can change across host replugs (or a
+host reboot). If the container is currently *stopped*, this self-heals: the
+next `run.sh`/`build.sh`/`setup_build_env.sh` re-derives the bind list from
+whatever's connected *right now* before starting it (dropping stale entries
+if the camera isn't plugged in, or picking up new ones if it is). If the
+container is already *running* when you replug, that doesn't apply --
+rerun `setup_build_env.sh` to refresh it (it stops/starts the container
+automatically if the passthrough config changed).
 
 **Known issue on at least one tested board (OrangePi/Rockchip, single USB3
 port):** the D455 can flap -- the kernel repeatedly detaches and reprobes its
