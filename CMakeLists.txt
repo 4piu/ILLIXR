@@ -313,15 +313,42 @@ if(DOWNLOAD_DATA_FILE AND DATA_FILE)
     if(NOT HAVE_MATCH)
         message("Data file appears local")
         set(LOCAL_DATA "${DATA_FILE}")
-    elseif(EXISTS "${DATA_ARCHIVE}")
-        message("Data file already exists, not re-downloading")
     else()
-        message("Downloading ${DATA_FILE} to ${DATA_ARCHIVE}")
-        file(DOWNLOAD ${DATA_FILE} "${DATA_ARCHIVE}" SHOW_PROGRESS)
-        if(${CMAKE_MINOR_VERSION} LESS 18)
-            execute_process(COMMAND unzip -d ${CMAKE_CURRENT_SOURCE_DIR}/data "${DATA_ARCHIVE}")
+        if(EXISTS "${DATA_ARCHIVE}")
+            message("Data file already exists, not re-downloading")
         else()
-            file(ARCHIVE_EXTRACT INPUT "${DATA_ARCHIVE}" DESTINATION ${CMAKE_SOURCE_DIR}/data)
+            message("Downloading ${DATA_FILE} to ${DATA_ARCHIVE}")
+            file(DOWNLOAD ${DATA_FILE} "${DATA_ARCHIVE}" SHOW_PROGRESS)
+        endif()
+
+        if(EXISTS "${CMAKE_SOURCE_DIR}/data/mav0")
+            message("EuRoC data already extracted")
+        else()
+            if(${CMAKE_MINOR_VERSION} LESS 18)
+                execute_process(COMMAND unzip -d ${CMAKE_CURRENT_SOURCE_DIR}/data "${DATA_ARCHIVE}")
+            else()
+                file(ARCHIVE_EXTRACT INPUT "${DATA_ARCHIVE}" DESTINATION ${CMAKE_SOURCE_DIR}/data)
+            endif()
+
+            # The ETH research-collection host serves the whole vicon_room1
+            # collection (V1_01_easy/V1_02_medium/V1_03_difficult, each a
+            # .bag file plus its own nested per-sequence zip) rather than the
+            # single V1_02_medium sequence directly at the archive root like
+            # the old robotics.ethz.ch host did. ILLIXR only ever reads
+            # data/mav0 (see cmake/ConfigurationSummary.cmake), which lives
+            # inside that nested zip, not at the outer archive's root.
+            set(EUROC_SEQUENCE_ZIP "${CMAKE_SOURCE_DIR}/data/vicon_room1/V1_02_medium/V1_02_medium.zip")
+            if(EXISTS "${EUROC_SEQUENCE_ZIP}")
+                if(${CMAKE_MINOR_VERSION} LESS 18)
+                    execute_process(COMMAND unzip -d ${CMAKE_CURRENT_SOURCE_DIR}/data "${EUROC_SEQUENCE_ZIP}")
+                else()
+                    file(ARCHIVE_EXTRACT INPUT "${EUROC_SEQUENCE_ZIP}" DESTINATION "${CMAKE_SOURCE_DIR}/data")
+                endif()
+                # Drop the rest of the collection (other sequences + .bag
+                # files): nothing in ILLIXR reads them and they're several
+                # GB of dead weight otherwise.
+                file(REMOVE_RECURSE "${CMAKE_SOURCE_DIR}/data/vicon_room1")
+            endif()
         endif()
     endif()
 endif()
