@@ -306,8 +306,9 @@ set(FULL_PLUGIN_LIST_STRING "${FULL_PLUGIN_LIST_STRING}\n")
 set(CURRENT_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}" CACHE INTERNAL "")
 
 
-# deal with the data file if there is one
-if(DOWNLOAD_DATA_FILE AND DATA_FILE)
+# deal with the data file if there is one -- only offline_cam/offline_imu read
+# data/mav0, so skip the download+extraction entirely when neither is enabled.
+if(DOWNLOAD_DATA_FILE AND DATA_FILE AND (USE_OFFLINE_CAM OR USE_OFFLINE_IMU))
     set(DATA_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/data.zip")
     string(REGEX MATCH "^http" HAVE_MATCH ${DATA_FILE})
     if(NOT HAVE_MATCH)
