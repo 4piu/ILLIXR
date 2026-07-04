@@ -10,7 +10,15 @@
 #   run.sh --plugins "a,b,c"          override the plugin list for this run
 #   run.sh --yaml profiles/ci.yaml    run from a YAML profile instead (path relative
 #                                      to the repo root, or absolute)
-#   run.sh --headless                 set ILLIXR_DISPLAY_MODE=none (no window)
+#   run.sh --headless                 set ILLIXR_DISPLAY_MODE=none (no window backend)
+#   run.sh --headless-xvfb            run the real window backend under Xvfb
+#                                      (default 1920x1080x24)
+#   run.sh --headless-xvfb=1280x720   ...with a custom resolution
+#
+# --headless and --headless-xvfb are mutually exclusive: the former skips the
+# window backend entirely, the latter runs it for real against a virtual X
+# display (needs `xvfb` installed -- rerun setup_build_env.sh to pick it up
+# if the container was provisioned before this option existed).
 #
 # Any other arguments (--duration=, --data=, --demo_data=, etc.) are passed
 # straight through to main.*.exe -- see docs/getting_started.md.
@@ -27,6 +35,8 @@ source "${STATE_FILE}"
 PLUGIN_OVERRIDE=""
 YAML_OVERRIDE=""
 HEADLESS=0
+HEADLESS_XVFB=0
+XVFB_RESOLUTION="1920x1080"
 EXTRA_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -34,10 +44,21 @@ while [ $# -gt 0 ]; do
         --plugins) PLUGIN_OVERRIDE="$2"; shift 2 ;;
         --yaml) YAML_OVERRIDE="$2"; shift 2 ;;
         --headless) HEADLESS=1; shift ;;
-        -h|--help) sed -n '2,16p' "$SCRIPT_PATH"; exit 0 ;;
+        --headless-xvfb) HEADLESS_XVFB=1; shift ;;
+        --headless-xvfb=*) HEADLESS_XVFB=1; XVFB_RESOLUTION="${1#--headless-xvfb=}"; shift ;;
+        -h|--help) sed -n '2,21p' "$SCRIPT_PATH"; exit 0 ;;
         *) EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
+
+if [ "$HEADLESS" = "1" ] && [ "$HEADLESS_XVFB" = "1" ]; then
+    echo "--headless and --headless-xvfb are mutually exclusive." >&2
+    exit 1
+fi
+if [ "$HEADLESS_XVFB" = "1" ] && ! [[ "$XVFB_RESOLUTION" =~ ^[0-9]+x[0-9]+$ ]]; then
+    echo "--headless-xvfb resolution must look like WIDTHxHEIGHT (got '${XVFB_RESOLUTION}')" >&2
+    exit 1
+fi
 
 ensure_machine_running
 
@@ -64,7 +85,17 @@ else
 fi
 
 ENV_PREFIX=""
-[ "$HEADLESS" = "1" ] && ENV_PREFIX="ILLIXR_DISPLAY_MODE=none "
+CMD_PREFIX=""
+if [ "$HEADLESS" = "1" ]; then
+    ENV_PREFIX="ILLIXR_DISPLAY_MODE=none "
+elif [ "$HEADLESS_XVFB" = "1" ]; then
+    if ! container_exec_as_user "command -v xvfb-run >/dev/null 2>&1"; then
+        echo "xvfb-run not found in the container. Rerun setup_build_env.sh to install it (xvfb is in CORE_PACKAGES)." >&2
+        exit 1
+    fi
+    # -a picks a free display number so concurrent runs don't collide.
+    CMD_PREFIX="xvfb-run -a --server-args='-screen 0 ${XVFB_RESOLUTION}x24' "
+fi
 
-echo "Running: ${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"
-container_exec_as_user "export LD_LIBRARY_PATH=${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64:\${LD_LIBRARY_PATH} && cd ${INSTALL_PREFIX}/bin && ${ENV_PREFIX}${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"
+echo "Running: ${CMD_PREFIX}${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"
+container_exec_as_user "export LD_LIBRARY_PATH=${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64:\${LD_LIBRARY_PATH} && cd ${INSTALL_PREFIX}/bin && ${ENV_PREFIX}${CMD_PREFIX}${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"

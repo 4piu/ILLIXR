@@ -47,7 +47,22 @@ To tear everything down: `./scripts/nspawn/teardown_build_env.sh`.
   the file `cmake` generates at the repo root, or `--yaml profiles/ci.yaml`)
   instead of the saved plugin list. This is also how `env_vars:` like `data:`
   get set, since `-p plugin,list` mode doesn't read a profile file at all.
-- `--headless` -- sets `ILLIXR_DISPLAY_MODE=none` (no window backend).
+- `--headless` -- sets `ILLIXR_DISPLAY_MODE=none` (no window backend at all).
+- `--headless-xvfb[=WIDTHxHEIGHT]` -- mutually exclusive with `--headless`.
+  Runs the *real* GLFW/Vulkan window backend, but against a virtual `Xvfb`
+  X display instead of a real one (default resolution `1920x1080`, depth
+  24). Useful for exercising `native_renderer`/`timewarp_vk`/`vkdemo`
+  end-to-end (actual window/swapchain creation) on a headless machine,
+  which `--headless` skips entirely. Needs `xvfb` installed (it's in
+  `CORE_PACKAGES`; rerun `setup_build_env.sh` to pick it up if the
+  container predates this option). Verified working end-to-end (GLFW
+  initializes, the app runs and exits cleanly at the requested duration)
+  with `native_renderer,timewarp_vk,vkdemo` -- just make sure to pass
+  `--demo_data=<path>` too, since `native_renderer` needs a scene file and
+  currently doesn't shut down cleanly if that's missing and it throws
+  during construction (a pre-existing shutdown-on-exception issue,
+  unrelated to Xvfb -- see the `bug_fix` branch's other shutdown-crash
+  fixes for the same pattern elsewhere).
 - `--plugins "a,b,c"` -- override the plugin list for one run without
   touching the saved selection.
 

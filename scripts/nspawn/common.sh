@@ -60,6 +60,10 @@ CORE_PACKAGES=(
     # apt dependency -- without it, dlopen() fails at runtime with
     # "libdebuginfod.so.1: cannot open shared object file", not at build time.
     libdebuginfod1
+    # Not a build dependency -- provides xvfb-run for run.sh --headless-xvfb
+    # (runs the real GLFW/Vulkan window backend against a virtual X display,
+    # as opposed to --headless which skips the window backend entirely).
+    xvfb
 )
 
 # Extra apt packages per plugin, keyed by the plugin's base name (the part before
