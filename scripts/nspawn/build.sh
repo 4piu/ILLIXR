@@ -43,6 +43,11 @@ ensure_machine_running
 
 BUILD_DIR="${CONTAINER_SRC}/build"
 container_exec_as_user "mkdir -p ${BUILD_DIR}"
+# Several bundled deps (SPIRV-Headers, OpenVINS, ...) install to
+# CMAKE_INSTALL_PREFIX as part of their own ExternalProject build step, not
+# just the final top-level `--target install` -- so this needs to exist
+# before the very first build, not just before installing.
+container_exec_as_user "mkdir -p ${INSTALL_PREFIX}"
 
 if [ "$RECONFIGURE" = "1" ] || ! container_exec_as_user "test -f ${BUILD_DIR}/CMakeCache.txt"; then
     if [ -n "$PROFILE" ]; then
