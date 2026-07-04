@@ -178,6 +178,13 @@ if ! id ${CONTAINER_USER} >/dev/null 2>&1; then
     echo '${CONTAINER_USER} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/${CONTAINER_USER}-user
     chmod 440 /etc/sudoers.d/${CONTAINER_USER}-user
 fi
+# systemd-nspawn auto-creates the repo bind-mount target (and thus its parent,
+# this home directory) as root:root the first time the container starts,
+# before this useradd ever runs -- and useradd -m does not chown a home
+# directory that already exists. Fix ownership of the home dir itself
+# (non-recursive: the bind-mounted repo underneath keeps its own,
+# already-correct, host-matching ownership).
+chown ${CONTAINER_USER}:${CONTAINER_USER} ${CONTAINER_HOME}
 current_uid=\$(id -u ${CONTAINER_USER})
 if [ \"\$current_uid\" != \"${UID_H}\" ]; then
     groupmod -g ${GID_H} ${CONTAINER_USER}
