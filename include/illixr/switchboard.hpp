@@ -870,6 +870,17 @@ public:
         }
     }
 
+    /**
+     * @brief Remove all topics and buffered events.
+     *
+     * This should only be called after plugins have stopped and dropped their
+     * reader/writer handles.
+     */
+    void clear_topics() {
+        const std::unique_lock lock{registry_lock_};
+        registry_.clear();
+    }
+
 private:
     const phonebook*                             phonebook_;
     std::unordered_map<std::string, topic>       registry_;

@@ -6,6 +6,7 @@
 #include "illixr/record_logger.hpp"
 #include "sqlite3pp/sqlite3pp.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -99,16 +100,17 @@ public:
         spdlog::get("illixr")->debug("{}", table_name_);
         spdlog::get("illixr")->set_pattern("%+");
 
+        // Flush to disk roughly every second instead of only at shutdown, so a crash mid-run
+        // (or a benchmark you want to inspect while it's still going) doesn't lose everything
+        // logged so far.
         std::size_t processed = 0;
         while (!terminate_.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds{1});
-            // Uncomment this block to log in "real time";
-            // Otherwise, everything gets logged "post real time".
-            /*
-            const std::chrono::seconds max_record_match_wait_time {10};
-            actual_batch_size = queue_.wait_dequeue_bulk_timed(record_batch.begin(), record_batch.size(),
-            max_record_match_wait_time); process(record_batch, actual_batch_size); processed += actual_batch_size;
-            */
+            actual_batch_size =
+                queue_.wait_dequeue_bulk_timed(record_batch.begin(), record_batch.size(), std::chrono::seconds{1});
+            if (actual_batch_size > 0) {
+                process(record_batch, actual_batch_size);
+                processed += actual_batch_size;
+            }
         }
 
         // We got the terminate_ command,
@@ -187,7 +189,12 @@ public:
 
 private:
     static const std::filesystem::path          directory_;
-    const record_header&                        record_header_;
+    // Owned by value, not by reference: record_header globals like _threadloop_iteration_header
+    // have internal linkage, so each plugin .so that includes the header gets its own independent
+    // copy at its own address. A bare reference here can end up dangling depending on plugin
+    // unload/teardown ordering and queue/thread relocation; record_header is small and cheap to
+    // copy, so there's no reason to risk it.
+    const record_header                         record_header_;
     std::string                                 table_name_;
     sqlite3pp::database                         database_;
     std::string                                 insert_str_;
@@ -197,7 +204,13 @@ private:
     std::thread                                 thread_;
 };
 
-const std::filesystem::path sqlite_thread::directory_{"metrics"};
+// ILLIXR_METRICS_DIR lets two ILLIXR instances (e.g. an offload_vio client and server) sharing a
+// single repo checkout/working directory write to separate metrics stores instead of contending
+// for the same SQLite files (see notes/sev_offload_vio_benchmark_plan.md). Must be a real process
+// environment variable (read at static-init time, before yaml env_vars are applied).
+const std::filesystem::path sqlite_thread::directory_{std::getenv("ILLIXR_METRICS_DIR") != nullptr
+                                                            ? std::getenv("ILLIXR_METRICS_DIR")
+                                                            : "metrics"};
 
 class sqlite_record_logger : public record_logger {
 protected:

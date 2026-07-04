@@ -1,8 +1,11 @@
 #pragma once
 
 #include <arpa/inet.h>
+#include <cerrno>
+#include <cstring>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <stdexcept>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -15,6 +18,9 @@ class TCPSocket {
 public:
     TCPSocket() {
         fd_ = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd_ < 0) {
+            throw runtime_error(string("[tcp_network_backend] Failed to create socket: ") + strerror(errno));
+        }
     }
 
     [[maybe_unused]] explicit TCPSocket(int fd) {
@@ -33,12 +39,17 @@ public:
         local_addr.sin_family      = AF_INET;
         local_addr.sin_port        = htons(port);
         local_addr.sin_addr.s_addr = inet_addr(ip.c_str());
-        bind(fd_, (struct sockaddr*) &local_addr, sizeof(local_addr));
+        if (bind(fd_, (struct sockaddr*) &local_addr, sizeof(local_addr)) < 0) {
+            throw runtime_error("[tcp_network_backend] Failed to bind to " + ip + ":" + to_string(port) + ": " +
+                                 strerror(errno));
+        }
     }
 
     // Listen for a connection. It is typically called from the server socket.
     void socket_listen(const int backlog = 16) const {
-        listen(fd_, backlog);
+        if (listen(fd_, backlog) < 0) {
+            throw runtime_error(string("[tcp_network_backend] Failed to listen on socket: ") + strerror(errno));
+        }
     }
 
     // Connect the socket to a specified peer addr
@@ -47,12 +58,25 @@ public:
         peer_addr.sin_family      = AF_INET;
         peer_addr.sin_port        = htons(port);
         peer_addr.sin_addr.s_addr = inet_addr(ip.c_str());
-        connect(fd_, (struct sockaddr*) &peer_addr, sizeof(peer_addr));
+        if (connect(fd_, (struct sockaddr*) &peer_addr, sizeof(peer_addr)) < 0) {
+            throw runtime_error("[tcp_network_backend] Failed to connect to " + ip + ":" + to_string(port) + ": " +
+                                 strerror(errno));
+        }
+    }
+
+    // Unblock any thread currently blocked in read_data()/write_data() on this socket, so it can be
+    // safely joined before the TCPSocket is destroyed. Errors are ignored: the socket may already be
+    // closed by the peer, which is fine since we're shutting down anyway.
+    void socket_shutdown() const {
+        shutdown(fd_, SHUT_RDWR);
     }
 
     // Accept connect from the client. It is typically called from the server socket.
     int socket_accept() const {
         int fd = accept(fd_, nullptr, nullptr);
+        if (fd < 0) {
+            throw runtime_error(string("[tcp_network_backend] Failed to accept connection: ") + strerror(errno));
+        }
         return fd;
     }
 
@@ -66,6 +90,12 @@ public:
     [[nodiscard]] string read_data(const size_t limit = BUFFER_SIZE) const {
         char    buffer[BUFFER_SIZE];
         ssize_t bytes_read = read(fd_, buffer, min(BUFFER_SIZE, limit));
+        if (bytes_read < 0) {
+            throw runtime_error(string("[tcp_network_backend] Failed to read from socket: ") + strerror(errno));
+        }
+        if (bytes_read == 0) {
+            throw runtime_error("[tcp_network_backend] Peer closed the connection");
+        }
         return string(buffer, bytes_read);
     }
 
@@ -106,6 +136,9 @@ private:
     [[nodiscard]] string::const_iterator write_helper(const string::const_iterator& begin,
                                                       const string::const_iterator& end) const {
         ssize_t bytes_written = write(fd_, &*begin, end - begin);
+        if (bytes_written < 0) {
+            throw runtime_error(string("[tcp_network_backend] Failed to write to socket: ") + strerror(errno));
+        }
         return begin + bytes_written;
     }
 

@@ -9,9 +9,9 @@
 #include "illixr/stoplight.hpp"
 #include "illixr/switchboard.hpp"
 #include "illixr/vk/vk_extension_request.hpp"
-// #include "sqlite_record_logger.hpp"
-// #include "stdout_record_logger.hpp"
 #include "no_op_record_logger.hpp"
+#include "sqlite_record_logger.hpp"
+#include "stdout_record_logger.hpp"
 #include "vulkan_display.hpp"
 
 #include <algorithm>
@@ -42,12 +42,35 @@ void spdlogger(const std::string& name, const char* log_level) {
     spdlog::register_logger(logger);
 }
 
+/**
+ * @brief Picks the record_logger backend.
+ *
+ * Defaults to discarding records (no_op), matching prior behavior, so this is opt-in. Set
+ * ILLIXR_RECORD_LOGGER=sqlite (structured, low-overhead, for benchmarking — see
+ * notes/sev_offload_vio_benchmark_plan.md) or =stdout (CSV to stdout, for quick debugging) as a
+ * real process environment variable; this runs before the yaml's env_vars are applied, so it
+ * can't be set there (same restriction as ILLIXR_LOG_LEVEL above).
+ */
+std::shared_ptr<record_logger> make_record_logger() {
+    const char* backend = std::getenv("ILLIXR_RECORD_LOGGER");
+    if (backend != nullptr) {
+        const std::string backend_str{backend};
+        if (backend_str == "sqlite") {
+            return std::make_shared<sqlite_record_logger>();
+        }
+        if (backend_str == "stdout") {
+            return std::make_shared<stdout_record_logger>();
+        }
+    }
+    return std::make_shared<no_op_record_logger>();
+}
+
 class runtime_impl : public runtime {
 public:
     explicit runtime_impl() {
         spdlogger("illixr", std::getenv("ILLIXR_LOG_LEVEL")); // can't use switchboard interface here
         phonebook_.register_impl<relative_clock>(std::make_shared<relative_clock>());
-        phonebook_.register_impl<record_logger>(std::make_shared<no_op_record_logger>());
+        phonebook_.register_impl<record_logger>(make_record_logger());
         phonebook_.register_impl<gen_guid>(std::make_shared<gen_guid>());
         phonebook_.register_impl<switchboard>(std::make_shared<switchboard>(&phonebook_));
         switchboard_   = phonebook_.lookup_impl<switchboard>();
@@ -142,11 +165,16 @@ public:
     }
 
     void _stop() override {
-        phonebook_.lookup_impl<stoplight>()->signal_should_stop();
+        auto stoplight_service = phonebook_.lookup_impl<stoplight>();
+        if (stoplight_service->check_shutdown_complete()) {
+            return;
+        }
+
+        stoplight_service->signal_should_stop();
         // After this point, threads may exit their main loops
         // They still have destructors and still have to be joined.
 
-        phonebook_.lookup_impl<switchboard>()->stop();
+        switchboard_->stop();
         // After this point, Switchboard's internal thread-workers which power synchronous callbacks are stopped and joined.
 
         for (const std::shared_ptr<plugin>& plugin : plugins_) {
@@ -154,8 +182,12 @@ public:
             // Each plugin gets joined in its stop
         }
 
+        plugins_.clear();
+        // Drop queued/latest topic events while plugin shared libraries are still loaded.
+        switchboard_->clear_topics();
+
         // Tell runtime::wait() that it can return
-        phonebook_.lookup_impl<stoplight>()->signal_shutdown_complete();
+        stoplight_service->signal_shutdown_complete();
     }
 
     ~runtime_impl() override {
