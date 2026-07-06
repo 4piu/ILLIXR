@@ -1,0 +1,13 @@
+# Server config for the SEV vs non-SEV offload_vio benchmark, run inside
+# xr-no-sev / xr-sev on the hypervisor. See notes/sev_offload_vio_benchmark_plan.md.
+# Same plugin order as profiles/offload_vio_server.yaml (tcp_network_backend
+# must come first -- see the plan doc's "plugin ordering gotcha").
+plugins: tcp_network_backend,offload_vio.server_rx,offload_vio.server_tx,openvins
+env_vars:
+  ENABLE_OFFLOAD: False
+  ENABLE_ALIGNMENT: False
+  ENABLE_VERBOSE_ERRORS: False
+  ENABLE_PRE_SLEEP: False
+  ILLIXR_TCP_SERVER_IP: 0.0.0.0
+  ILLIXR_TCP_SERVER_PORT: 39510
+  ILLIXR_IS_CLIENT: 0

@@ -1,0 +1,9 @@
+# Minimal client (device) config for the SEV vs non-SEV offload_vio benchmark.
+# See notes/sev_offload_vio_benchmark_plan.md. No display/rendering plugins:
+# only what offload_vio.device_tx/device_rx actually touch.
+plugins: offline_imu,offline_cam,tcp_network_backend,offload_vio.device_tx,offload_vio.device_rx
+env_vars:
+  data: /home/illixr/ILLIXR/data/mav0
+  ILLIXR_TCP_SERVER_IP: 10.193.124.49
+  ILLIXR_TCP_SERVER_PORT: 39510
+  ILLIXR_IS_CLIENT: 1

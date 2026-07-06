@@ -14,6 +14,14 @@
 #   run.sh --headless-xvfb            run the real window backend under Xvfb
 #                                      (default 1920x1080x24)
 #   run.sh --headless-xvfb=1280x720   ...with a custom resolution
+#   run.sh --env KEY=VALUE            set a real process env var for the run
+#                                      (repeatable). Needed for anything read
+#                                      via std::getenv() at static-init time
+#                                      (e.g. ILLIXR_METRICS_DIR -- see
+#                                      src/sqlite_record_logger.hpp), which is
+#                                      too early for the yaml's env_vars:
+#                                      section (applied later, via setenv() in
+#                                      src/plugin.cpp).
 #
 # --headless and --headless-xvfb are mutually exclusive: the former skips the
 # window backend entirely, the latter runs it for real against a virtual X
@@ -38,6 +46,7 @@ HEADLESS=0
 HEADLESS_XVFB=0
 XVFB_RESOLUTION="1920x1080"
 EXTRA_ARGS=()
+EXTRA_ENV=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,9 +55,14 @@ while [ $# -gt 0 ]; do
         --headless) HEADLESS=1; shift ;;
         --headless-xvfb) HEADLESS_XVFB=1; shift ;;
         --headless-xvfb=*) HEADLESS_XVFB=1; XVFB_RESOLUTION="${1#--headless-xvfb=}"; shift ;;
-        -h|--help) sed -n '2,21p' "$SCRIPT_PATH"; exit 0 ;;
+        --env) EXTRA_ENV+=("$2"); shift 2 ;;
+        -h|--help) sed -n '2,28p' "$SCRIPT_PATH"; exit 0 ;;
         *) EXTRA_ARGS+=("$1"); shift ;;
     esac
+done
+
+for kv in "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}"; do
+    [[ "$kv" == *=* ]] || { echo "--env expects KEY=VALUE (got '$kv')" >&2; exit 1; }
 done
 
 if [ "$HEADLESS" = "1" ] && [ "$HEADLESS_XVFB" = "1" ]; then
@@ -85,9 +99,12 @@ else
 fi
 
 ENV_PREFIX=""
+for kv in "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}"; do
+    ENV_PREFIX="${ENV_PREFIX}${kv%%=*}='${kv#*=}' "
+done
 CMD_PREFIX=""
 if [ "$HEADLESS" = "1" ]; then
-    ENV_PREFIX="ILLIXR_DISPLAY_MODE=none "
+    ENV_PREFIX="${ENV_PREFIX}ILLIXR_DISPLAY_MODE=none "
 elif [ "$HEADLESS_XVFB" = "1" ]; then
     if ! container_exec_as_user "command -v xvfb-run >/dev/null 2>&1"; then
         echo "xvfb-run not found in the container. Rerun setup_build_env.sh to install it (xvfb is in CORE_PACKAGES)." >&2
