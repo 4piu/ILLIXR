@@ -11,6 +11,8 @@ imgui.ini
 output.*
 metrics/
 metrics_*/
+benchmark_results/
+bench_run_*/
 .cache
 .deps
 data_record/
