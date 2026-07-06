@@ -20,6 +20,7 @@ deps
 cmake-build*
 
 illixr.yaml
+illixr.*.yaml
 
 docs/docs/getting_started.md
 
