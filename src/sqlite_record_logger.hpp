@@ -28,7 +28,10 @@ public:
         RAC_ERRNO_MSG("sqlite_record_logger at start of prep_db");
 
         if (!std::filesystem::exists(directory_)) {
-            std::filesystem::create_directory(directory_);
+            // create_directories (not create_directory): ILLIXR_METRICS_DIR is commonly
+            // nested (e.g. benchmark_results/sev_off/run1/server), and the single-level
+            // call silently required every parent to already exist.
+            std::filesystem::create_directories(directory_);
         }
 
         const std::string path = directory_ / (table_name_ + std::string{".sqlite"});
