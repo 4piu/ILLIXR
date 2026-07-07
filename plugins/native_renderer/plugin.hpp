@@ -2,6 +2,7 @@
 
 #include "illixr/data_format/pose_prediction.hpp"
 #include "illixr/phonebook.hpp"
+#include "illixr/record_logger.hpp"
 #include "illixr/switchboard.hpp"
 #include "illixr/threadloop.hpp"
 #include "illixr/vk/display_provider.hpp"
@@ -152,6 +153,13 @@ private:
     int                                                         fps_{};
     switchboard::reader<switchboard::event_wrapper<time_point>> vsync_;
     time_point                                                  last_fps_update_;
+
+    // End-to-end benchmark instrumentation (framerate + motion-to-photon latency).
+    // Both are process-local (single-machine) durations in relative_clock's time base,
+    // unlike offload_vio's uplink/downlink which need system_clock for cross-machine
+    // comparison -- see notes/sev_benchmark_extended_metrics_plan.md.
+    record_coalescer fps_log_;
+    record_coalescer mtp_log_;
 
     std::shared_ptr<vulkan::buffer_pool<data_format::fast_pose_type>> buffer_pool_;
 };

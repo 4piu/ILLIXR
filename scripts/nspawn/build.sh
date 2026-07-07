@@ -9,6 +9,13 @@
 #   build.sh --no-install         skip the install step (faster iteration on compile errors)
 #   build.sh --jobs 4             override parallelism (default: nproc)
 #   build.sh --prefix /some/path  override CMAKE_INSTALL_PREFIX for this run
+#   build.sh --build-type RelWithDebInfo
+#                                  set -DCMAKE_BUILD_TYPE (implies --reconfigure, since an
+#                                  already-configured build dir won't pick this up otherwise).
+#                                  Default (unset) is CMakeLists.txt's own default, Release
+#                                  (-O3 -DNDEBUG, no -g, no frame pointers -- fine for normal
+#                                  runs, but `perf record`/flamegraphs need RelWithDebInfo
+#                                  (-ggdb -O3) for usable stacks; see run.sh --perf.
 
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "${SCRIPT_PATH}")"
@@ -19,6 +26,7 @@ RECONFIGURE=0
 DO_INSTALL=1
 JOBS=""
 PREFIX_OVERRIDE=""
+BUILD_TYPE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -27,7 +35,8 @@ while [ $# -gt 0 ]; do
         --no-install) DO_INSTALL=0; shift ;;
         --jobs) JOBS="$2"; shift 2 ;;
         --prefix) PREFIX_OVERRIDE="$2"; shift 2 ;;
-        -h|--help) sed -n '2,9p' "$SCRIPT_PATH"; exit 0 ;;
+        --build-type) BUILD_TYPE="$2"; RECONFIGURE=1; shift 2 ;;
+        -h|--help) sed -n '2,16p' "$SCRIPT_PATH"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -59,6 +68,7 @@ if [ "$RECONFIGURE" = "1" ] || ! container_exec_as_user "test -f ${BUILD_DIR}/CM
             CONFIGURE_ARGS="${CONFIGURE_ARGS} -D${flag}=ON"
         done
     fi
+    [ -n "$BUILD_TYPE" ] && CONFIGURE_ARGS="${CONFIGURE_ARGS} -DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
     echo "Configuring: cmake .. -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}${CONFIGURE_ARGS}"
     container_exec_as_user "cd ${BUILD_DIR} && cmake .. -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}${CONFIGURE_ARGS}"
 fi

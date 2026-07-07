@@ -1,6 +1,42 @@
 #include "plugin.hpp"
 
+#include <chrono>
+
 using namespace ILLIXR;
+
+// Real kernel-measured TCP diagnostics (see network::TCPSocket::get_tcp_info), sampled
+// periodically off the single network thread so the network doesn't need its own timer/thread.
+// Distinct from the payload_bytes/latency-derived throughput approximation in
+// scripts/analyze_metrics.py -- see notes/sev_benchmark_extended_metrics_plan.md.
+const record_header _tcp_socket_stats_header{
+    "tcp_socket_stats",
+    {
+        {"wall_time", typeid(std::size_t)},
+        {"rtt_us", typeid(std::size_t)},
+        {"rttvar_us", typeid(std::size_t)},
+        {"retransmits", typeid(std::size_t)},
+        {"total_retrans", typeid(std::size_t)},
+        {"snd_cwnd", typeid(std::size_t)},
+        {"unacked", typeid(std::size_t)},
+    }};
+
+// Per-message wire-frame size (8-byte header + topic name + payload), both directions -- larger
+// than the serialized-payload-only payload_bytes already logged by offload_vio_uplink/downlink.
+const record_header _tcp_frame_header{
+    "tcp_frame",
+    {
+        {"wall_time", typeid(std::size_t)},
+        {"direction", typeid(std::string)},
+        {"topic_name", typeid(std::string)},
+        {"wire_bytes", typeid(std::size_t)},
+    }};
+
+namespace {
+std::size_t now_ns() {
+    return static_cast<std::size_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+} // namespace
 
 tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb_)
     : plugin(name_, pb_)
@@ -108,7 +144,8 @@ void tcp_network_backend::start_server() {
 }
 
 void tcp_network_backend::read_loop(network::TCPSocket* socket) {
-    std::string buffer;
+    std::string                          buffer;
+    std::chrono::steady_clock::time_point last_stats_sample{};
     while (running_) {
         // read from socket
         // packet are in the format
@@ -134,10 +171,35 @@ void tcp_network_backend::read_loop(network::TCPSocket* socket) {
                 std::string       topic_name(buffer.data() + 8, topic_name_length);
                 std::vector<char> message(buffer.begin() + 8 + topic_name_length, buffer.begin() + total_length);
                 topic_receive(topic_name, message);
+                record_logger_->log(record{_tcp_frame_header,
+                                           {
+                                               {now_ns()},
+                                               {std::string{"rx"}},
+                                               {topic_name},
+                                               {static_cast<std::size_t>(total_length)},
+                                           }});
                 buffer.erase(buffer.begin(), buffer.begin() + total_length);
             } else {
                 break;
             }
+        }
+
+        // Sample TCP_INFO at most once/second -- cheap kernel getsockopt call, no need for a
+        // dedicated timer thread since this loop already spins continuously on read().
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_stats_sample >= std::chrono::seconds(1)) {
+            auto stats = socket->get_tcp_info();
+            record_logger_->log(record{_tcp_socket_stats_header,
+                                       {
+                                           {now_ns()},
+                                           {static_cast<std::size_t>(stats.rtt_us)},
+                                           {static_cast<std::size_t>(stats.rttvar_us)},
+                                           {static_cast<std::size_t>(stats.retransmits)},
+                                           {static_cast<std::size_t>(stats.total_retrans)},
+                                           {static_cast<std::size_t>(stats.snd_cwnd)},
+                                           {static_cast<std::size_t>(stats.unacked)},
+                                       }});
+            last_stats_sample = now;
         }
     }
 }
@@ -224,6 +286,13 @@ void tcp_network_backend::send_to_peer(const std::string& topic_name, std::strin
     packet.append(topic_name);
     packet.append(message.begin(), message.end());
     peer_socket_->write_data(packet);
+    record_logger_->log(record{_tcp_frame_header,
+                               {
+                                   {now_ns()},
+                                   {std::string{"tx"}},
+                                   {topic_name},
+                                   {static_cast<std::size_t>(total_length)},
+                               }});
 }
 
 extern "C" plugin* this_plugin_factory(phonebook* pb) {

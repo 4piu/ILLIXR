@@ -113,6 +113,34 @@ public:
         setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(int));
     }
 
+    // Real kernel-measured TCP diagnostics (TCP_INFO), for spotting whether network is the
+    // bottleneck at higher throughput -- distinct from the payload_bytes/latency derived
+    // throughput approximation in scripts/analyze_metrics.py. All zero if the getsockopt call
+    // fails (e.g. socket already closed).
+    struct tcp_stats {
+        uint32_t rtt_us        = 0; // smoothed round-trip time estimate
+        uint32_t rttvar_us     = 0; // RTT variance
+        uint32_t retransmits   = 0; // consecutive unrecovered [RTO] timeouts
+        uint32_t total_retrans = 0; // cumulative retransmitted segments for this connection
+        uint32_t snd_cwnd      = 0; // congestion window, in MSS-sized units
+        uint32_t unacked       = 0; // segments sent but not yet acked
+    };
+
+    [[nodiscard]] tcp_stats get_tcp_info() const {
+        struct tcp_info info {};
+        socklen_t        len = sizeof(info);
+        tcp_stats         stats{};
+        if (getsockopt(fd_, IPPROTO_TCP, TCP_INFO, &info, &len) == 0) {
+            stats.rtt_us        = info.tcpi_rtt;
+            stats.rttvar_us     = info.tcpi_rttvar;
+            stats.retransmits   = info.tcpi_retransmits;
+            stats.total_retrans = info.tcpi_total_retrans;
+            stats.snd_cwnd      = info.tcpi_snd_cwnd;
+            stats.unacked       = info.tcpi_unacked;
+        }
+        return stats;
+    }
+
     /* accessors */
     [[maybe_unused]] [[nodiscard]] string local_address() const {
         struct sockaddr_in local_address;

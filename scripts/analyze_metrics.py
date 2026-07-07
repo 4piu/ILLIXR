@@ -132,6 +132,57 @@ def load_threadloop(metrics_dir: Path, warmup_s: float,
     return df
 
 
+def load_fps(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
+    """native_renderer_fps — one row per second, from native_renderer's frame counter."""
+    df = _load_table(metrics_dir / "native_renderer_fps.sqlite", "native_renderer_fps")
+    if df is None or df.empty:
+        return None
+    df = df.sort_values("wall_time").reset_index(drop=True)
+    t0 = df["wall_time"].iloc[0]
+    df = df[df["wall_time"] - t0 >= warmup_s * 1e9].copy()
+    df["elapsed_s"] = (df["wall_time"] - t0) / 1e9
+    return df
+
+
+def load_mtp(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
+    """native_renderer_mtp — per-frame motion-to-photon latency (predicted pose target time
+    -> actual present time). Process-local relative_clock timing, not cross-machine."""
+    df = _load_table(metrics_dir / "native_renderer_mtp.sqlite", "native_renderer_mtp")
+    if df is None or df.empty:
+        return None
+    df = df.sort_values("present_time").reset_index(drop=True)
+    t0 = df["present_time"].iloc[0]
+    df = df[df["present_time"] - t0 >= warmup_s * 1e9].copy()
+    df["elapsed_s"] = (df["present_time"] - t0) / 1e9
+    return df
+
+
+def load_tcp_socket_stats(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
+    """tcp_socket_stats — TCP_INFO sampled ~1/s (kernel-measured RTT/retransmits/cwnd)."""
+    df = _load_table(metrics_dir / "tcp_socket_stats.sqlite", "tcp_socket_stats")
+    if df is None or df.empty:
+        return None
+    df = df.sort_values("wall_time").reset_index(drop=True)
+    t0 = df["wall_time"].iloc[0]
+    df = df[df["wall_time"] - t0 >= warmup_s * 1e9].copy()
+    df["elapsed_s"] = (df["wall_time"] - t0) / 1e9
+    df["rtt_ms"] = df["rtt_us"] / 1000.0
+    return df
+
+
+def load_tcp_frames(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
+    """tcp_frame — per-message wire-frame size (8B header + topic name + payload), both
+    directions. Larger than offload_vio_uplink/downlink's payload_bytes (serialized-payload-only)."""
+    df = _load_table(metrics_dir / "tcp_frame.sqlite", "tcp_frame")
+    if df is None or df.empty:
+        return None
+    df = df.sort_values("wall_time").reset_index(drop=True)
+    t0 = df["wall_time"].iloc[0]
+    df = df[df["wall_time"] - t0 >= warmup_s * 1e9].copy()
+    df["elapsed_s"] = (df["wall_time"] - t0) / 1e9
+    return df
+
+
 def load_run(server_dir: Path | None, client_dir: Path | None,
              warmup_s: float) -> dict:
     """Load all relevant tables for one (server_dir, client_dir) pair."""
@@ -143,6 +194,8 @@ def load_run(server_dir: Path | None, client_dir: Path | None,
         run["uplink"] = load_uplink(server_dir, warmup_s)
         run["server_callbacks"] = load_switchboard_callbacks(server_dir, warmup_s, names_s)
         run["server_threadloop"] = load_threadloop(server_dir, warmup_s, names_s)
+        run["server_tcp_stats"] = load_tcp_socket_stats(server_dir, warmup_s)
+        run["server_tcp_frames"] = load_tcp_frames(server_dir, warmup_s)
 
     if client_dir:
         names_c = load_plugin_names(client_dir)
@@ -150,6 +203,10 @@ def load_run(server_dir: Path | None, client_dir: Path | None,
         run["downlink"] = load_downlink(client_dir, warmup_s)
         run["client_callbacks"] = load_switchboard_callbacks(client_dir, warmup_s, names_c)
         run["client_threadloop"] = load_threadloop(client_dir, warmup_s, names_c)
+        run["client_tcp_stats"] = load_tcp_socket_stats(client_dir, warmup_s)
+        run["client_tcp_frames"] = load_tcp_frames(client_dir, warmup_s)
+        run["fps"] = load_fps(client_dir, warmup_s)
+        run["mtp"] = load_mtp(client_dir, warmup_s)
 
     return run
 
@@ -168,6 +225,13 @@ def percentile_table(series: pd.Series, label: str) -> pd.DataFrame:
     }])
 
 
+def scalar_row(value: float, n: int, label: str) -> pd.DataFrame:
+    """For cumulative counters (e.g. tcp total_retrans) where percentiles across samples
+    would be misleading -- just the final/max value observed over the run."""
+    return pd.DataFrame([{"metric": label, "n": n, "mean": value,
+                          "p50": value, "p90": value, "p95": value, "p99": value}])
+
+
 def summarise_latency(run: dict, label: str) -> pd.DataFrame:
     rows = []
     if run.get("uplink") is not None:
@@ -183,6 +247,22 @@ def summarise_latency(run: dict, label: str) -> pd.DataFrame:
         if not imu_cb.empty:
             rows.append(percentile_table(imu_cb["wall_duration_ms"], "openvins_wall_ms"))
             rows.append(percentile_table(imu_cb["cpu_duration_ms"],  "openvins_cpu_ms"))
+
+    # End-to-end rendering: framerate + motion-to-photon latency (client-side only).
+    if run.get("mtp") is not None:
+        rows.append(percentile_table(run["mtp"]["mtp_latency_ms"], "mtp_ms"))
+    fps = run.get("fps")
+    if fps is not None and not fps.empty:
+        rows.append(percentile_table(fps["fps"], "fps"))
+
+    # Network diagnostics: kernel-measured TCP_INFO, both directions where available.
+    for side in ("client", "server"):
+        stats = run.get(f"{side}_tcp_stats")
+        if stats is not None and not stats.empty:
+            rows.append(percentile_table(stats["rtt_ms"], f"{side}_tcp_rtt_ms"))
+            rows.append(scalar_row(float(stats["total_retrans"].max()), len(stats),
+                                   f"{side}_tcp_total_retrans"))
+            rows.append(percentile_table(stats["snd_cwnd"], f"{side}_tcp_snd_cwnd"))
 
     if not rows:
         return pd.DataFrame()
@@ -322,6 +402,33 @@ def plot_time_series(runs_data: list[tuple[str, dict]], out_path: Path | None = 
         plt.close(fig)
         return
 
+    fig.tight_layout()
+    if out_path:
+        fig.savefig(out_path)
+        print(f"  saved {out_path}")
+    else:
+        plt.show()
+    plt.close(fig)
+
+
+def plot_fps_time_series(runs_data: list[tuple[str, dict]], out_path: Path | None = None) -> None:
+    """Per-second framerate over time (native_renderer_fps), client-side."""
+    fig, ax = plt.subplots(figsize=(9, 4))
+    any_data = False
+    for label, run in runs_data:
+        fps = run.get("fps")
+        if fps is None or fps.empty:
+            continue
+        fps = fps.sort_values("elapsed_s")
+        ax.plot(fps["elapsed_s"], fps["fps"], label=label, linewidth=1.2)
+        any_data = True
+    if not any_data:
+        plt.close(fig)
+        return
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Frames per second")
+    ax.set_title("native_renderer framerate over time")
+    ax.legend()
     fig.tight_layout()
     if out_path:
         fig.savefig(out_path)
@@ -540,6 +647,20 @@ def main() -> None:
     plot_time_series(runs_data, out("timeseries.png"))
 
     plot_payload_throughput(runs_data, out("throughput_cdf.png"))
+
+    plot_cdf(runs_data, "mtp_latency_ms", "mtp",
+             "Motion-to-photon latency CDF (predicted pose target → present)", "ms",
+             out("cdf_mtp.png"))
+
+    plot_fps_time_series(runs_data, out("fps_timeseries.png"))
+
+    plot_cdf(runs_data, "rtt_ms", "client_tcp_stats",
+             "Client-side TCP RTT CDF (kernel TCP_INFO)", "ms",
+             out("cdf_tcp_rtt_client.png"))
+
+    plot_cdf(runs_data, "rtt_ms", "server_tcp_stats",
+             "Server-side TCP RTT CDF (kernel TCP_INFO)", "ms",
+             out("cdf_tcp_rtt_server.png"))
 
     plot_per_plugin_threadloop(runs_data, "server", out("threadloop_server.png"))
     plot_per_plugin_threadloop(runs_data, "client", out("threadloop_client.png"))

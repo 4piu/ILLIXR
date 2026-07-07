@@ -1,0 +1,16 @@
+# Client (device) config for the extended SEV vs non-SEV offload_vio benchmark,
+# adding end-to-end rendering (framerate + motion-to-photon latency) on top of
+# the minimal bench_offload_vio_device.yaml. See
+# notes/sev_benchmark_extended_metrics_plan.md for why each plugin is here
+# (gtsam_integrator/pose_prediction/timewarp_vk/vkdemo/native_renderer are on
+# the render/MTP path; ground_truth_slam/debugview deliberately excluded,
+# neither is). Must run with --headless-xvfb, not --headless: native_renderer
+# unconditionally looks up vulkan::display_provider, which --headless never
+# registers (src/runtime_impl.cpp).
+plugins: offline_imu,offline_cam,tcp_network_backend,offload_vio.device_tx,offload_vio.device_rx,gtsam_integrator,pose_prediction,timewarp_vk,vkdemo,native_renderer
+env_vars:
+  data: /home/illixr/ILLIXR/data/mav0
+  demo_data: /home/illixr/ILLIXR/demo_data
+  ILLIXR_TCP_SERVER_IP: 10.193.124.49
+  ILLIXR_TCP_SERVER_PORT: 39510
+  ILLIXR_IS_CLIENT: 1

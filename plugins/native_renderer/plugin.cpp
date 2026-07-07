@@ -17,6 +17,25 @@
 using namespace ILLIXR;
 using namespace ILLIXR::data_format;
 
+// Per-second framerate, for end-to-end benchmark comparison (e.g. SEV vs non-SEV).
+const record_header _native_renderer_fps_header{
+    "native_renderer_fps",
+    {
+        {"wall_time", typeid(std::size_t)},
+        {"fps", typeid(std::size_t)},
+    }};
+
+// Motion-to-photon latency: predicted-pose target time -> actual present time, both in
+// relative_clock's time base (single-process, no cross-machine clock concerns like
+// offload_vio's uplink/downlink).
+const record_header _native_renderer_mtp_header{
+    "native_renderer_mtp",
+    {
+        {"predict_target_time", typeid(std::size_t)},
+        {"present_time", typeid(std::size_t)},
+        {"mtp_latency_ms", typeid(double)},
+    }};
+
 [[maybe_unused]] native_renderer::native_renderer(const std::string& name, phonebook* pb)
     : threadloop{name, pb}
     , switchboard_{phonebook_->lookup_impl<switchboard>()}
@@ -27,7 +46,9 @@ using namespace ILLIXR::data_format;
     , app_{phonebook_->lookup_impl<vulkan::app>()}
     , clock_{phonebook_->lookup_impl<relative_clock>()}
     , vsync_{switchboard_->get_reader<switchboard::event_wrapper<time_point>>("vsync_estimate")}
-    , last_fps_update_{std::chrono::duration<long, std::nano>{0}} {
+    , last_fps_update_{std::chrono::duration<long, std::nano>{0}}
+    , fps_log_{phonebook_->lookup_impl<record_logger>()}
+    , mtp_log_{phonebook_->lookup_impl<record_logger>()} {
     if (switchboard_->get_env_char("ILLIXR_WIDTH") == nullptr || switchboard_->get_env_char("ILLIXR_HEIGHT") == nullptr) {
         log_->warn("Please define ILLIXR_WIDTH and ILLIXR_HEIGHT. Default values used.");
         width_  = display_sink_->swapchain_extent_.width;
@@ -249,6 +270,18 @@ void native_renderer::_p_one_iteration() {
             ret = (vkQueuePresentKHR(display_sink_->queues_[vulkan::queue::queue_type::GRAPHICS].vk_queue, &present_info));
         }
 
+        {
+            auto present_time = clock_->now();
+            double mtp_latency_ms =
+                duration_to_double<std::milli>(present_time - fast_pose.predict_target_time);
+            mtp_log_.log(record{_native_renderer_mtp_header,
+                                {
+                                    {static_cast<std::size_t>(fast_pose.predict_target_time.time_since_epoch().count())},
+                                    {static_cast<std::size_t>(present_time.time_since_epoch().count())},
+                                    {mtp_latency_ms},
+                                }});
+        }
+
         // Wait for the previous frame to finish rendering
         VK_ASSERT_SUCCESS(vkWaitForFences(display_sink_->vk_device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX))
 
@@ -267,6 +300,11 @@ void native_renderer::_p_one_iteration() {
     // Print the FPS
     if (clock_->now() - last_fps_update_ > std::chrono::milliseconds(1000)) {
         log_->info("FPS: {}", fps_);
+        fps_log_.log(record{_native_renderer_fps_header,
+                            {
+                                {static_cast<std::size_t>(clock_->now().time_since_epoch().count())},
+                                {static_cast<std::size_t>(fps_)},
+                            }});
         fps_             = 0;
         last_fps_update_ = clock_->now();
     } else {

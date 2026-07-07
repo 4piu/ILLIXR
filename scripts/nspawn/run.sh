@@ -22,6 +22,19 @@
 #                                      too early for the yaml's env_vars:
 #                                      section (applied later, via setenv() in
 #                                      src/plugin.cpp).
+#   run.sh --perf                     wrap the run in `perf record -g --call-graph
+#                                      dwarf`, writing perf-<timestamp>.data under
+#                                      the repo root (visible on the host via the
+#                                      bind mount). Needs `perf` installed in the
+#                                      container (not there by default -- see
+#                                      notes/sev_benchmark_extended_metrics_plan.md)
+#                                      and a RelWithDebInfo build (build.sh
+#                                      --build-type RelWithDebInfo) for usable
+#                                      call stacks; the default Release build has
+#                                      no debug info or frame pointers. One-off
+#                                      profiling tool, not part of the regular
+#                                      benchmark loop -- post-process with
+#                                      `perf script`/FlameGraph on the host.
 #
 # --headless and --headless-xvfb are mutually exclusive: the former skips the
 # window backend entirely, the latter runs it for real against a virtual X
@@ -47,6 +60,7 @@ HEADLESS_XVFB=0
 XVFB_RESOLUTION="1920x1080"
 EXTRA_ARGS=()
 EXTRA_ENV=()
+PERF=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -56,7 +70,8 @@ while [ $# -gt 0 ]; do
         --headless-xvfb) HEADLESS_XVFB=1; shift ;;
         --headless-xvfb=*) HEADLESS_XVFB=1; XVFB_RESOLUTION="${1#--headless-xvfb=}"; shift ;;
         --env) EXTRA_ENV+=("$2"); shift 2 ;;
-        -h|--help) sed -n '2,28p' "$SCRIPT_PATH"; exit 0 ;;
+        --perf) PERF=1; shift ;;
+        -h|--help) sed -n '2,39p' "$SCRIPT_PATH"; exit 0 ;;
         *) EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
@@ -114,5 +129,19 @@ elif [ "$HEADLESS_XVFB" = "1" ]; then
     CMD_PREFIX="xvfb-run -a --server-args='-screen 0 ${XVFB_RESOLUTION}x24' "
 fi
 
-echo "Running: ${CMD_PREFIX}${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"
-container_exec_as_user "export LD_LIBRARY_PATH=${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64:\${LD_LIBRARY_PATH} && cd ${INSTALL_PREFIX}/bin && ${ENV_PREFIX}${CMD_PREFIX}${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"
+PERF_PREFIX=""
+if [ "$PERF" = "1" ]; then
+    if ! container_exec "command -v perf >/dev/null 2>&1"; then
+        echo "perf not found in the container. See notes/sev_benchmark_extended_metrics_plan.md for setup" \
+             "(needs a kernel-matched linux-tools package, which may need a PPA added to the container's apt sources)." >&2
+        exit 1
+    fi
+    PERF_DATA="${CONTAINER_SRC}/perf-$(date +%Y%m%d-%H%M%S).data"
+    # container_exec (root), not container_exec_as_user: perf record needs elevated
+    # perf_event_paranoid access for kernel-symbol/call-graph collection.
+    PERF_PREFIX="sudo perf record -g --call-graph dwarf -o ${PERF_DATA} -- "
+    echo "Profiling with perf, writing ${PERF_DATA}"
+fi
+
+echo "Running: ${CMD_PREFIX}${PERF_PREFIX}${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"
+container_exec_as_user "export LD_LIBRARY_PATH=${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64:\${LD_LIBRARY_PATH} && cd ${INSTALL_PREFIX}/bin && ${ENV_PREFIX}${CMD_PREFIX}${PERF_PREFIX}${BIN} ${RUN_ARGS} ${EXTRA_ARGS[*]}"
