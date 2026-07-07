@@ -76,6 +76,28 @@ def load_plugin_names(metrics_dir: Path) -> dict[int, str]:
     return dict(zip(df["plugin_id"], df["plugin_name"]))
 
 
+# offload_vio_uplink/downlink use cross-machine wall-clock subtraction
+# (unsigned nanoseconds in the C++ layer -- see plugins/offload_vio/server_rx and
+# device_rx). Client/server clocks are kept within single-digit ms of each other
+# before every benchmark run (see notes/sev_offload_vio_benchmark_plan.md), but a
+# mid-run NTP correction on either side can still occasionally push one sample's
+# apparent latency negative, which wraps around to ~2^64 ns (~1.8e13 ms) instead
+# of going negative. No real uplink/downlink for this workload is anywhere near
+# this large, so treat anything over MAX_PLAUSIBLE_LATENCY_MS as a wraparound
+# artifact and drop it, same way a real distributed-tracing pipeline would
+# without hardware (PTP-grade) clock sync.
+MAX_PLAUSIBLE_LATENCY_MS = 5000
+
+
+def _drop_wraparound(df: pd.DataFrame, col: str, label: str) -> pd.DataFrame:
+    bad = df[col] > MAX_PLAUSIBLE_LATENCY_MS
+    n_bad = int(bad.sum())
+    if n_bad:
+        print(f"  [warn] {label}: dropping {n_bad}/{len(df)} rows with implausible "
+              f"{col} (clock wraparound artifact)", file=sys.stderr)
+    return df[~bad].copy()
+
+
 def load_uplink(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
     """offload_vio_uplink from the server-side metrics dir."""
     df = _load_table(metrics_dir / "offload_vio_uplink.sqlite", "offload_vio_uplink")
@@ -86,7 +108,7 @@ def load_uplink(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
     t0 = df["real_timestamp"].iloc[0]
     df = df[df["real_timestamp"] - t0 >= warmup_s * 1e9].copy()
     df["elapsed_s"] = (df["real_timestamp"] - t0) / 1e9
-    return df
+    return _drop_wraparound(df, "uplink_latency_ms", f"{metrics_dir}/offload_vio_uplink")
 
 
 def load_downlink(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
@@ -98,7 +120,7 @@ def load_downlink(metrics_dir: Path, warmup_s: float) -> pd.DataFrame | None:
     t0 = df["end_server_timestamp"].iloc[0]
     df = df[df["end_server_timestamp"] - t0 >= warmup_s * 1e9].copy()
     df["elapsed_s"] = (df["end_server_timestamp"] - t0) / 1e9
-    return df
+    return _drop_wraparound(df, "downlink_latency_ms", f"{metrics_dir}/offload_vio_downlink")
 
 
 def load_switchboard_callbacks(metrics_dir: Path, warmup_s: float,
