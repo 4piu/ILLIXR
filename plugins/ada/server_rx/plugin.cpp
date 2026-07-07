@@ -2,6 +2,10 @@
 
 #include <spdlog/spdlog.h>
 
+// Must match device_tx's ADA_USE_HW_CODEC setting -- see plugins/ada/device_tx/plugin.cpp and
+// notes/ada_offload_cpu_plan.md.
+// #define ADA_USE_HW_CODEC
+
 using namespace ILLIXR;
 using namespace ILLIXR::data_format;
 
@@ -113,6 +117,7 @@ void server_rx::_p_one_iteration() {
 }
 
 void server_rx::start() {
+#ifdef ADA_USE_HW_CODEC
     decoder_ = std::make_unique<ada_video_decoder>([this](cv::Mat&& img0, cv::Mat&& img1) {
         {
             std::lock_guard<std::mutex> lock{mutex_};
@@ -123,6 +128,7 @@ void server_rx::start() {
         cond_var_.notify_one();
     });
     decoder_->init();
+#endif
     threadloop::start();
 }
 
@@ -152,7 +158,8 @@ void server_rx::receive_sr_input(const sr_input_proto::SRSendData& sr_input) {
     receive_size << "MSB " << cur_frame << " " << sr_input.depth_img_msb_data().size() << "\n";
     receive_size << "LSB " << cur_frame << " " << sr_input.depth_img_lsb_data().size() << "\n";
 
-    auto                         depth_decoding_start = std::chrono::high_resolution_clock::now();
+    auto depth_decoding_start = std::chrono::high_resolution_clock::now();
+#ifdef ADA_USE_HW_CODEC
     std::unique_lock<std::mutex> lock{mutex_};
     decoder_->enqueue(msb, lsb);
     cond_var_.wait(lock, [this]() {
@@ -163,6 +170,16 @@ void server_rx::receive_sr_input(const sr_input_proto::SRSendData& sr_input) {
     img1_dst_.copyTo(lsb_buf_);
     img_ready_ = false;
     lock.unlock();
+#else
+    // Raw fallback, mirrors device_tx's ADA_USE_HW_CODEC-off path: msb/lsb are already
+    // contiguous CV_8UC1 pixel bytes (rows/cols carried in the protobuf), no codec involved.
+    cv::Mat(static_cast<int>(sr_input.depth_img_msb_data().rows()), static_cast<int>(sr_input.depth_img_msb_data().columns()),
+            CV_8UC1, msb.data())
+        .copyTo(msb_buf_);
+    cv::Mat(static_cast<int>(sr_input.depth_img_lsb_data().rows()), static_cast<int>(sr_input.depth_img_lsb_data().columns()),
+            CV_8UC1, lsb.data())
+        .copyTo(lsb_buf_);
+#endif
 
     auto depth_decoding_end = std::chrono::high_resolution_clock::now();
     auto duration_depth_decoding =

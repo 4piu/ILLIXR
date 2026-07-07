@@ -79,7 +79,16 @@ declare -A PLUGIN_PACKAGES=(
     [openni]="libopenni2-dev"
     [audio_pipeline]="libprotobuf-dev protobuf-compiler libprotoc-dev portaudio19-dev libspatialaudio-dev"
     [offload_vio]="libprotobuf-dev protobuf-compiler libprotoc-dev"
-    [ada]="libprotobuf-dev protobuf-compiler libprotoc-dev portaudio19-dev libspatialaudio-dev"
+    # ada.device_tx/server_rx's GStreamer pkg-config needs (gstreamer-1.0/-app/-video/-audio)
+    # are already covered by CORE_PACKAGES' libgstreamer1.0-dev +
+    # libgstreamer-plugins-base1.0-dev. libomp-dev is for ada.infinitam's OpenMP usage
+    # (ITMLib). ada.infinitam no longer needs a CUDA toolchain package here -- its CUDA
+    # detection is optional (cmake/UseCUDA.cmake auto-falls-back to a CPU build when CUDA
+    # isn't found), now that the ILLIXR/InfiniTAM wrapper itself respects that (see
+    # notes/ada_offload_cpu_plan.md). The NVENC/NVDEC hardware codec in device_tx/server_rx
+    # is opt-in (ADA_USE_HW_CODEC, off by default) for the same reason -- see
+    # plugins/ada/device_tx/plugin.cpp.
+    [ada]="libprotobuf-dev protobuf-compiler libprotoc-dev portaudio19-dev libspatialaudio-dev libomp-dev"
     [timewarp_gl]="libjpeg-dev libpng-dev libtiff-dev libgflags-dev libwayland-dev wayland-protocols libx11-xcb-dev libxcb-glx0-dev libxcb-randr0-dev libxkbcommon-dev libxrandr-dev"
 )
 

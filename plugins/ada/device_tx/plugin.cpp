@@ -3,6 +3,14 @@
 #include <netinet/in.h>
 #include <spdlog/spdlog.h>
 
+// Off by default: the GStreamer encode pipeline (utils/video_encoder.cpp, ADA branch) hardcodes
+// NVIDIA-only DeepStream/Jetson elements (nvv4l2h265enc, nvvidconv) with no software fallback --
+// gst_element_factory_make() returns null and the pipeline fails to link on any non-NVIDIA host.
+// Mirrors offload_vio's USE_COMPRESSION toggle (plugins/offload_vio/README.md), which defaults
+// to sending raw/uncompressed data for the same reason. See
+// notes/ada_offload_cpu_plan.md.
+// #define ADA_USE_HW_CODEC
+
 using namespace ILLIXR;
 using namespace ILLIXR::data_format;
 
@@ -48,6 +56,7 @@ using namespace ILLIXR::data_format;
 void device_tx::start() {
     threadloop::start();
 
+#ifdef ADA_USE_HW_CODEC
     encoder_ = std::make_unique<ada_video_encoder>(
         // First callback for img0 and img1
         [this](const GstMapInfo& img0, const GstMapInfo& img1) {
@@ -58,6 +67,7 @@ void device_tx::start() {
             cond_var_.notify_one();
         });
     encoder_->init();
+#endif
 
     switchboard_->schedule<scene_recon_type>(id_, "ScanNet_Data",
                                              [this](switchboard::ptr<const scene_recon_type> datum, std::size_t) {
@@ -116,6 +126,7 @@ void device_tx::send_scene_recon_data(switchboard::ptr<const scene_recon_type> d
     frame_send_timing_ << "Decompose " << (static_cast<double>(duration_decompose) / 1000.0) << "\n";
 
     auto depth_encoding_start = std::chrono::high_resolution_clock::now();
+#ifdef ADA_USE_HW_CODEC
     {
         std::lock_guard<std::mutex> lk{mutex_};
         img_ready_ = false;
@@ -134,6 +145,17 @@ void device_tx::send_scene_recon_data(switchboard::ptr<const scene_recon_type> d
         depth_img_msb->set_size(static_cast<int64_t>(depth_img_msb->img_data().size()));
         depth_img_lsb->set_size(static_cast<int64_t>(depth_img_lsb->img_data().size()));
     }
+#else
+    // Raw fallback: depth_msb/depth_lsb are already contiguous CV_8UC1 planes (see
+    // decompose_16bit_to_8bit above) -- send the pixel bytes directly, no codec involved.
+    // server_rx mirrors this (raw path skips ada_video_decoder symmetrically).
+    depth_img_msb->mutable_img_data()->assign(reinterpret_cast<const char*>(depth_msb.data),
+                                              depth_msb.total() * depth_msb.elemSize());
+    depth_img_lsb->mutable_img_data()->assign(reinterpret_cast<const char*>(depth_lsb.data),
+                                              depth_lsb.total() * depth_lsb.elemSize());
+    depth_img_msb->set_size(static_cast<int64_t>(depth_img_msb->img_data().size()));
+    depth_img_lsb->set_size(static_cast<int64_t>(depth_img_lsb->img_data().size()));
+#endif
 
     auto depth_encoding_end = std::chrono::high_resolution_clock::now();
     auto duration_depth_encoding =
