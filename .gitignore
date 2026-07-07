@@ -12,6 +12,7 @@ output.*
 metrics/
 metrics_*/
 benchmark_results/
+benchmark_results_extended/
 bench_run_*/
 .cache
 .deps
