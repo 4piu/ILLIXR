@@ -1,0 +1,20 @@
+# Server config for the SEV vs non-SEV ada benchmark, run inside
+# xr-no-sev / xr-sev on the hypervisor. See notes/ada_sev_benchmark_plan.md.
+# Same plugin order as profiles/ada_server.yaml (tcp_network_backend
+# must come first -- see the offload_vio plan doc's "plugin ordering
+# gotcha", applies identically here). ILLIXR_TCP_SERVER_IP is 0.0.0.0
+# (bind-all) rather than the VM's specific dynamic internal address --
+# this session's manual testing hit a real problem hardcoding that
+# address (DHCP lease changes across VM switches), 0.0.0.0 sidesteps it
+# and matches bench_offload_vio_server.yaml's convention. --duration is
+# passed on the CLI by the orchestration script, not set here.
+plugins: tcp_network_backend,ada.server_rx,ada.server_tx,ada.infinitam,ada.mesh_compression
+env_vars:
+  ILLIXR_DATA: /home/illixr/ILLIXR/data/tum_fr1_desk
+  FRAME_COUNT: 596
+  FPS: 15
+  PARTIAL_MESH_COUNT: 8
+  MESH_COMPRESS_PARALLELISM: 8
+  ILLIXR_TCP_SERVER_IP: 0.0.0.0
+  ILLIXR_TCP_SERVER_PORT: 39510
+  ILLIXR_IS_CLIENT: 0
