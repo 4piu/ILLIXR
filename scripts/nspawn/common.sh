@@ -79,6 +79,14 @@ declare -A PLUGIN_PACKAGES=(
     [openni]="libopenni2-dev"
     [audio_pipeline]="libprotobuf-dev protobuf-compiler libprotoc-dev portaudio19-dev libspatialaudio-dev"
     [offload_vio]="libprotobuf-dev protobuf-compiler libprotoc-dev"
+    # NOTE (not scripted here, apt-installed cmake is too old): ada's Draco fetch
+    # (cmake/GetDraco.cmake) needs CMake >=3.24, but Ubuntu 22.04's apt cmake is
+    # 3.22.1 -- `pip3 install --user "cmake<4"` gets a working one (3.31.x
+    # confirmed), but plain `pip3 install --user --upgrade cmake` overshoots to
+    # 4.x, which then breaks yaml-cpp's `cmake_minimum_required` (CMake 4 dropped
+    # compatibility with policies <3.5). Verified end-to-end: with cmake 3.31.10,
+    # all 9 ada.* plugins + tcp_network_backend configure, build, and install
+    # cleanly on this CUDA-less ARM64 container.
     # ada.device_tx/server_rx's GStreamer pkg-config needs (gstreamer-1.0/-app/-video/-audio)
     # are already covered by CORE_PACKAGES' libgstreamer1.0-dev +
     # libgstreamer-plugins-base1.0-dev. libomp-dev is for ada.infinitam's OpenMP usage
