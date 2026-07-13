@@ -298,6 +298,30 @@ def load_tcp_frames(metrics_dir: Path) -> pd.DataFrame | None:
     return df
 
 
+def load_mem_probe(result_dir: Path) -> pd.DataFrame | None:
+    """mem_probe.csv -- guest-side resource probe written by
+    run_ada_sev_benchmark.sh's probe_loop, sampled every ~2s for the trial's
+    duration (+60s grace, to catch any post-duration stall). Columns:
+    epoch_ms,rss_kb,minflt,majflt[,swiotlb_used_slabs,swiotlb_hiwater_slabs]
+    (the swiotlb columns are server-only -- the client is bare metal, no
+    SEV/DMA-bounce-buffer concept applies there). Rows where the process
+    wasn't found (trial not yet started, or already exited) have empty
+    numeric fields -- kept as NaN via pandas rather than dropped, so gaps in
+    the process's lifetime are visible in the time series instead of
+    silently compressed away.
+    """
+    path = result_dir / "mem_probe.csv"
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    df = pd.read_csv(path)
+    if df.empty:
+        return None
+    df = df.sort_values("epoch_ms").reset_index(drop=True)
+    t0 = df["epoch_ms"].iloc[0]
+    df["elapsed_s"] = (df["epoch_ms"] - t0) / 1000.0
+    return df
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Joins -- see module docstring for which legs are cross-machine
 # ──────────────────────────────────────────────────────────────────────────────
@@ -372,11 +396,13 @@ def load_run(server_dir: Path | None, client_dir: Path | None, warmup_s: float) 
         run["server_infinitam"] = load_infinitam_latency(server_dir)
         run["server_tcp_stats"] = load_tcp_socket_stats(server_dir)
         run["server_tcp_frames"] = load_tcp_frames(server_dir)
+        run["server_mem_probe"] = load_mem_probe(server_dir)
     if client_dir:
         run["client_decoding"] = load_decoding_latency(client_dir)
         run["client_scene_mgmt"] = load_scene_management_stages(client_dir)
         run["client_tcp_stats"] = load_tcp_socket_stats(client_dir)
         run["client_tcp_frames"] = load_tcp_frames(client_dir)
+        run["client_mem_probe"] = load_mem_probe(client_dir)
     return run
 
 
@@ -576,6 +602,99 @@ def plot_tcp_rtt_cdf(runs_data: list[tuple[str, dict]], side: str, out_path: Pat
     plt.close(fig)
 
 
+def plot_rss_time_series(runs_data: list[tuple[str, dict]], side: str, out_path: Path | None = None) -> None:
+    """RSS over elapsed time for the ada process, one side at a time. Primary
+    tool for characterizing the sev_on memory-pressure anomaly (run2/run3
+    hit near-OOM, ~7.2Gi/7.3Gi used) -- watch whether RSS keeps climbing
+    instead of plateauing, and whether sev_on runs climb faster/higher than
+    sev_off runs at the same elapsed time."""
+    fig, ax = plt.subplots(figsize=(9, 4))
+    any_data = False
+    for label, run in runs_data:
+        df = run.get(f"{side}_mem_probe")
+        if df is None or df["rss_kb"].dropna().empty:
+            continue
+        ax.plot(df["elapsed_s"], df["rss_kb"] / 1024.0, label=label, linewidth=1.2, marker=".")
+        any_data = True
+    if not any_data:
+        plt.close(fig)
+        return
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("RSS (MB)")
+    ax.set_title(f"{side.capitalize()}-side ada process RSS over time")
+    ax.legend()
+    fig.tight_layout()
+    if out_path:
+        fig.savefig(out_path)
+        print(f"  saved {out_path}")
+    else:
+        plt.show()
+    plt.close(fig)
+
+
+def plot_majflt_time_series(runs_data: list[tuple[str, dict]], side: str, out_path: Path | None = None) -> None:
+    """Cumulative major page faults over time -- major faults specifically
+    (as opposed to minor faults) mean the kernel had to go to disk/swap,
+    the clearest available signal that memory pressure turned into real
+    thrashing rather than just elevated-but-comfortable RSS."""
+    fig, ax = plt.subplots(figsize=(9, 4))
+    any_data = False
+    for label, run in runs_data:
+        df = run.get(f"{side}_mem_probe")
+        if df is None or df["majflt"].dropna().empty:
+            continue
+        ax.plot(df["elapsed_s"], df["majflt"], label=label, linewidth=1.2, marker=".")
+        any_data = True
+    if not any_data:
+        plt.close(fig)
+        return
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Cumulative major page faults")
+    ax.set_title(f"{side.capitalize()}-side major page faults over time (swap/thrashing signal)")
+    ax.legend()
+    fig.tight_layout()
+    if out_path:
+        fig.savefig(out_path)
+        print(f"  saved {out_path}")
+    else:
+        plt.show()
+    plt.close(fig)
+
+
+def plot_swiotlb_time_series(runs_data: list[tuple[str, dict]], out_path: Path | None = None) -> None:
+    """Server-side SEV SWIOTLB DMA bounce-buffer pool usage over time
+    (io_tlb_used, with io_tlb_used_hiwater as the running peak). Direct
+    signal for whether the fixed-size bounce-buffer pool -- which *all*
+    device DMA, including every network packet, must pass through under
+    active AMD SEV since virtio_net can't DMA directly into encrypted guest
+    memory -- is becoming a ceiling under load. Only meaningful server-side;
+    the client is bare metal, no SEV/bounce-buffer concept applies."""
+    fig, ax = plt.subplots(figsize=(9, 4))
+    any_data = False
+    for label, run in runs_data:
+        df = run.get("server_mem_probe")
+        if df is None or "swiotlb_used_slabs" not in df.columns or df["swiotlb_used_slabs"].dropna().empty:
+            continue
+        ax.plot(df["elapsed_s"], df["swiotlb_used_slabs"], label=f"{label} (used)", linewidth=1.2)
+        ax.plot(df["elapsed_s"], df["swiotlb_hiwater_slabs"], label=f"{label} (hi-water)",
+                linewidth=1.0, linestyle="--", alpha=0.6)
+        any_data = True
+    if not any_data:
+        plt.close(fig)
+        return
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("SWIOTLB slabs in use")
+    ax.set_title("Server SWIOTLB (SEV DMA bounce-buffer) pool usage over time")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    if out_path:
+        fig.savefig(out_path)
+        print(f"  saved {out_path}")
+    else:
+        plt.show()
+    plt.close(fig)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Console reporting
 # ──────────────────────────────────────────────────────────────────────────────
@@ -702,6 +821,11 @@ def main() -> None:
     plot_infinitam_breakdown(runs_data, out("infinitam_breakdown.png"))
     plot_tcp_rtt_cdf(runs_data, "client", out("cdf_tcp_rtt_client.png"))
     plot_tcp_rtt_cdf(runs_data, "server", out("cdf_tcp_rtt_server.png"))
+
+    plot_rss_time_series(runs_data, "server", out("rss_server.png"))
+    plot_rss_time_series(runs_data, "client", out("rss_client.png"))
+    plot_majflt_time_series(runs_data, "server", out("majflt_server.png"))
+    plot_swiotlb_time_series(runs_data, out("swiotlb_server.png"))
 
     if out_dir:
         print(f"\nAll plots saved to {out_dir}/")

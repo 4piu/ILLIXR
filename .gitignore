@@ -13,6 +13,7 @@ metrics/
 metrics_*/
 benchmark_results/
 benchmark_results_extended/
+benchmark_results_ada/
 bench_run_*/
 .cache
 .deps
