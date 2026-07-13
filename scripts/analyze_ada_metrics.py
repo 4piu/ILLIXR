@@ -309,6 +309,16 @@ def load_mem_probe(result_dir: Path) -> pd.DataFrame | None:
     numeric fields -- kept as NaN via pandas rather than dropped, so gaps in
     the process's lifetime are visible in the time series instead of
     silently compressed away.
+
+    A probe_loop version before this fix only echoed the rss/minflt/majflt
+    triple when a PID was found, producing a short (ragged) CSV row on any
+    sample taken before the process launched or after it exited. pandas
+    reads that row's fields positionally, so the *next* columns (swiotlb
+    used/hiwater) silently slide left into minflt/majflt for that one row.
+    Only ever observed on the very first sample of a trial (before launch);
+    detect it the same way (rss_kb is NaN, the reliable signal the row was
+    short) and null out the rest of that row rather than trust misaligned
+    values.
     """
     path = result_dir / "mem_probe.csv"
     if not path.exists() or path.stat().st_size == 0:
@@ -316,6 +326,10 @@ def load_mem_probe(result_dir: Path) -> pd.DataFrame | None:
     df = pd.read_csv(path)
     if df.empty:
         return None
+    ragged = df["rss_kb"].isna()
+    if ragged.any():
+        other_cols = [c for c in df.columns if c not in ("epoch_ms", "rss_kb")]
+        df.loc[ragged, other_cols] = np.nan
     df = df.sort_values("epoch_ms").reset_index(drop=True)
     t0 = df["epoch_ms"].iloc[0]
     df["elapsed_s"] = (df["epoch_ms"] - t0) / 1000.0
@@ -663,21 +677,31 @@ def plot_majflt_time_series(runs_data: list[tuple[str, dict]], side: str, out_pa
 
 def plot_swiotlb_time_series(runs_data: list[tuple[str, dict]], out_path: Path | None = None) -> None:
     """Server-side SEV SWIOTLB DMA bounce-buffer pool usage over time
-    (io_tlb_used, with io_tlb_used_hiwater as the running peak). Direct
-    signal for whether the fixed-size bounce-buffer pool -- which *all*
-    device DMA, including every network packet, must pass through under
-    active AMD SEV since virtio_net can't DMA directly into encrypted guest
-    memory -- is becoming a ceiling under load. Only meaningful server-side;
-    the client is bare metal, no SEV/bounce-buffer concept applies."""
+    (io_tlb_used only -- the instantaneous, per-trial-meaningful reading).
+    Direct signal for whether the fixed-size bounce-buffer pool -- which
+    *all* device DMA, including every network packet, must pass through
+    under active AMD SEV since virtio_net can't DMA directly into
+    encrypted guest memory -- is becoming a ceiling under load. Only
+    meaningful server-side; the client is bare metal, no SEV/bounce-buffer
+    concept applies.
+
+    Deliberately NOT plotting io_tlb_used_hiwater: it's a running peak
+    since the *VM's own kernel boot*, not since this trial started. Domains
+    that stay up across many trials/sessions (observed on xr-no-sev, which
+    wasn't rebooted between an earlier session's testing and this run)
+    carry a stale, misleadingly large hi-water mark that has nothing to do
+    with the current trial -- plotting it produced a confusing chart where
+    sev_off showed a *larger* "peak" than sev_on despite sev_off's `used`
+    column reading 0 throughout. `used` doesn't have this problem (it's a
+    live gauge, not a running max) and is what all analysis should use.
+    """
     fig, ax = plt.subplots(figsize=(9, 4))
     any_data = False
     for label, run in runs_data:
         df = run.get("server_mem_probe")
         if df is None or "swiotlb_used_slabs" not in df.columns or df["swiotlb_used_slabs"].dropna().empty:
             continue
-        ax.plot(df["elapsed_s"], df["swiotlb_used_slabs"], label=f"{label} (used)", linewidth=1.2)
-        ax.plot(df["elapsed_s"], df["swiotlb_hiwater_slabs"], label=f"{label} (hi-water)",
-                linewidth=1.0, linestyle="--", alpha=0.6)
+        ax.plot(df["elapsed_s"], df["swiotlb_used_slabs"], label=label, linewidth=1.2)
         any_data = True
     if not any_data:
         plt.close(fig)
