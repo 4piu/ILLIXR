@@ -24,8 +24,16 @@ class server_rx
 public:
     [[maybe_unused]] server_rx(const std::string& name_, phonebook* pb_);
 
+    // Was: unconditionally `run`, spinning this thread at full CPU rate for the process's
+    // entire lifetime regardless of whether there's real work -- same class of bug as
+    // ada.device_rx/ada.scene_management (see their plugin.cpp for the full writeup); every
+    // `run` iteration gets logged to the sqlite record_logger, which can't keep up with an
+    // unthrottled spin loop once the real per-frame work is done. Only report real work.
     skip_option _p_should_skip() override {
-        return skip_option::run;
+        if (ada_reader_.size() > 0) {
+            return skip_option::run;
+        }
+        return skip_option::skip_and_yield;
     }
 
     void _p_one_iteration() override;

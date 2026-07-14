@@ -44,7 +44,20 @@ using namespace ILLIXR::data_format;
 }
 
 threadloop::skip_option device_rx::_p_should_skip() {
-    return skip_option::run;
+    // Was: unconditionally `run`, with no throttling and no stop condition -- this thread
+    // spins at full CPU rate for the process's entire lifetime, not just while there's real
+    // work. Every `run` iteration (even a no-op one, when sr_reader_ is empty) gets logged via
+    // threadloop::thread_main's it_log.log(...) to the sqlite record_logger, which cannot
+    // remotely keep up with an unthrottled spin loop's iteration rate -- the resulting backlog
+    // in the record logger's own queue was the actual driver of the multi-GB client memory
+    // growth diagnosed in notes/experiments/multiuser_load/ada_multiuser_plan.md (confirmed via
+    // live gdb + per-thread CPU-time sampling: RSS kept climbing for the ~110s after all real
+    // decode/merge work was already done, with every ada.* worker thread idle except this one
+    // spinning). Only report real work: skip (and yield the CPU) when there's nothing queued.
+    if (sr_reader_.size() > 0) {
+        return skip_option::run;
+    }
+    return skip_option::skip_and_yield;
 }
 
 void device_rx::_p_one_iteration() {

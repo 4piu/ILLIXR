@@ -201,7 +201,15 @@ void scene_management::process_inactive_frame(switchboard::ptr<const draco_type>
 }
 
 threadloop::skip_option scene_management::_p_should_skip() {
-    return skip_option::run;
+    // _p_one_iteration() is a no-op (see plugin.hpp) -- all of this plugin's real work happens
+    // via the switchboard::schedule<>() callbacks (process_vb_lists/process_inactive_frame),
+    // not this threadloop. Returning `run` unconditionally spun this thread at full CPU rate,
+    // logging a threadloop_iteration record on every empty iteration, for the process's entire
+    // lifetime -- the sqlite record_logger can't keep up with an unthrottled spin loop, and the
+    // resulting backlog was a major driver of the multi-GB client memory growth diagnosed in
+    // notes/experiments/multiuser_load/ada_multiuser_plan.md. This loop never has real
+    // per-iteration work to report, so it should never `run`.
+    return skip_option::skip_and_yield;
 }
 
 PLUGIN_MAIN(scene_management)
