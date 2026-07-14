@@ -17,9 +17,25 @@ if (NOT Infinitam_FOUND)
     # out to be a ~22.5GB allocation, well past this machine's RAM (std::bad_alloc) -- capped
     # at a bounded ~2.1M-triangle buffer sized for a single frame's incremental update instead.
     # See notes/ada_offload_cpu_plan.md for the full writeup.
+    #
+    # 657ca2141555209503dbae932ad82dd128b63a90 (branch cpu-incremental-mesh-fix, on top of
+    # 7913a0b) fixes a fifth bug, found while root-causing the ada server-side memory-pressure
+    # finding in notes/experiments/ada_offload/benchmark_plan.md: ITMMeshingEngine_CPU::MeshScene
+    # ignored the mesh_type argument entirely and always meshed every valid voxel block, so the
+    # "incremental" (mesh_type==1) extraction ada.infinitam actually calls every ~fps_ frames
+    # re-extracted and re-serialized the ENTIRE accumulated scene instead of just the blocks
+    # fused since the last extraction -- the CUDA engine already filtered by
+    # hashEntry.fused_counter > 0 for this case, CPU never did. Compounding that,
+    # ITMSceneReconstructionEngine_CPU never overrode ResetActiveSceneTracking (base class
+    # default is a no-op), so fused_counter was never reset even if the filter existed. Ported
+    # both from the CUDA engine. Confirmed via the ada benchmark: extracted triangle count per
+    # periodic pull no longer grows monotonically with total scene size across a run (was
+    # 21,901 -> 224,703 triangles over one run; now fluctuates with camera motion instead of
+    # climbing). See notes/experiments/multiuser_load/ada_multiuser_plan.md for the full
+    # root-cause writeup.
     FetchContent_Declare(InfiniTAM_ext
                          GIT_REPOSITORY https://github.com/4piu/InfiniTAM.git
-                         GIT_TAG 7913a0b83abb43d3e56ebb2fe8cf529fb70e77ce
+                         GIT_TAG 657ca2141555209503dbae932ad82dd128b63a90
     )
     set(ILLIXR_ROOT ${CMAKE_SOURCE_DIR}/include)
 
